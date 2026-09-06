@@ -75,6 +75,22 @@ MODES: dict[str, dict] = {
         "rules": {"gravity_g": 0.02, "goal_lines": 40},
         "desc": "Race to 40 lines (0.02G, like TETR.IO 40L)",
     },
+    "Cheese 10": {
+        "rules": {"gravity_g": 0.02, "goal_lines": 10, "cheese_rows": 9},
+        "desc": "Dig through 10 lines of cheese (Jstris 9-row stack)",
+    },
+    "Cheese 18": {
+        "rules": {"gravity_g": 0.02, "goal_lines": 18, "cheese_rows": 9},
+        "desc": "Dig through 18 lines of cheese",
+    },
+    "Cheese 100": {
+        "rules": {"gravity_g": 0.02, "goal_lines": 100, "cheese_rows": 9},
+        "desc": "Dig through 100 lines of cheese",
+    },
+    "Cheese ∞": {
+        "rules": {"gravity_g": 0.02, "goal_lines": None, "cheese_rows": 9},
+        "desc": "Endless digging — the cheese stack never runs out",
+    },
     "Zen": {
         "rules": {"gravity_g": 0.02, "goal_lines": None},
         "undo": True,
@@ -96,7 +112,16 @@ MODES: dict[str, dict] = {
 
 def make_mode_config(mode: str, base: AppConfig) -> tuple[GameConfig, bool]:
     preset = MODES[mode]
-    rules = replace(base.rules, **preset.get("rules", {}))
+    overrides = dict(preset.get("rules", {}))
+    # a user-set [rules] cheese_rows (e.g. 10, four-tris/Techmino style)
+    # wins over the 9-row Jstris preset in the cheese modes — but must not
+    # leak into non-cheese modes
+    if "cheese_rows" in overrides:
+        if base.rules.cheese_rows > 0:
+            overrides["cheese_rows"] = base.rules.cheese_rows
+    else:
+        overrides["cheese_rows"] = 0
+    rules = replace(base.rules, **overrides)
     return rules, bool(preset.get("trainer", False))
 
 

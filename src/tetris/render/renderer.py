@@ -213,6 +213,18 @@ class Renderer:
         for i, piece in enumerate(game.queue[:5]):
             self.draw_mini_piece(piece, nx + 2 * size, ny + i * slot + slot // 2, size)
 
+        # cheese counter (four-tris/Jstris style, under the next queue) -----
+        if game.cfg.cheese_rows:
+            cx = nx + 2 * size
+            cy = ny + 5 * slot + 34
+            if game.cfg.goal_lines is None:
+                self.text(str(game.lines), cx, cy, 38, ACCENT, bold=True, align="center")
+                self.text("lines dug", cx, cy + 44, 14, TEXT_DIM, align="center")
+            else:
+                remaining = max(0, game.cfg.goal_lines - game.lines)
+                self.text(str(remaining), cx, cy, 38, ACCENT, bold=True, align="center")
+                self.text("lines remaining", cx, cy + 44, 14, TEXT_DIM, align="center")
+
     def draw_stats(self, game: Game, mode: str) -> None:
         x = 80
         y = 250
@@ -284,15 +296,18 @@ class Renderer:
 
     def draw_menu(self, modes: list[str], selected: int, descs: list[str]) -> None:
         self.screen.fill(BG)
-        self.text("MODERN TETRIS", 480, 110, 44, ACCENT, bold=True, align="center")
-        self.text("Guideline engine / Jstris-style rules / pygame-ce", 480, 150, 16, TEXT_DIM, align="center")
+        self.text("MODERN TETRIS", 480, 90, 44, ACCENT, bold=True, align="center")
+        self.text("Guideline engine / Jstris-style rules / pygame-ce", 480, 132, 16, TEXT_DIM, align="center")
+        step = 44 if len(modes) > 7 else 52
+        top = 190
         for i, mode in enumerate(modes):
             color = TEXT if i == selected else TEXT_DIM
             prefix = "> " if i == selected else "  "
-            self.text(prefix + mode, 480, 250 + i * 52, 26, color, bold=(i == selected), align="center")
-            self.text(descs[i], 480, 250 + i * 52 + 28, 14, TEXT_DIM, align="center")
-        self.text("UP/DOWN select   ENTER start   S settings", 480, 560, 16, TEXT_DIM, align="center")
-        self.text("Arrows move  Z/X/A rotate  SPACE hard drop  C hold", 480, 640, 14, TEXT_DIM, align="center")
+            self.text(prefix + mode, 480, top + i * step, 26, color, bold=(i == selected), align="center")
+            self.text(descs[i], 480, top + i * step + 26, 14, TEXT_DIM, align="center")
+        hint_y = top + len(modes) * step + 28
+        self.text("UP/DOWN select   ENTER start   S settings", 480, hint_y, 16, TEXT_DIM, align="center")
+        self.text("Arrows move  Z/X/A rotate  SPACE hard drop  C hold", 480, hint_y + 26, 14, TEXT_DIM, align="center")
 
     def draw_settings(self, items, capture_active: bool) -> None:
         """Draw the settings screen.

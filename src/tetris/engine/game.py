@@ -94,6 +94,17 @@ class GameConfig:
     garbage_cancel: bool = True
     goal_lines: int | None = None  # sprint/marathon goal; None = endless
     score_level_multiplier: bool = False  # Guideline marathon scoring style
+    # Cheese (dig) race: the field starts with — and is topped back up to —
+    # this many garbage rows after every piece placement. 0 = off. Jstris
+    # keeps 9 cheese rows for every goal (10/18/100/∞); four-tris and
+    # Techmino use 10. With a goal, the refill is capped at the lines still
+    # needed, so the last clear finishes on an empty board (Techmino's
+    # dig_100l rule).
+    cheese_rows: int = 0
+    # How many consecutive garbage rows share one hole before the hole moves
+    # to a different column (four-tris' GARBAGE run-length pool; Jstris
+    # cheese plays the same: mostly 1–2 row runs, some longer shafts).
+    cheese_hole_runs: tuple[int, ...] = (1, 1, 2, 2, 4, 5)
 
 
 @dataclass
@@ -147,6 +158,11 @@ class Game:
     garbage_queue: list[GarbageBatch] = field(default_factory=list, init=False)
     _last_hole: int = field(default=-1, init=False)
 
+    # cheese (dig) mode -------------------------------------------------------
+    cheese_on_board: int = field(default=0, init=False)
+    _cheese_hole: int = field(default=-1, init=False)
+    _cheese_run: int = field(default=0, init=False)
+
     # stats -----------------------------------------------------------------
     tick_count: int = field(default=0, init=False)
     score: int = field(default=0, init=False)
@@ -171,6 +187,7 @@ class Game:
         self.bag = SevenBag(self.seed)
         self.styles = [[-1] * FIELD_W for _ in range(FIELD_H)]
         self._refill_queue()
+        self._cheese_refill()  # cheese modes start on a full cheese stack
         self.lock_delay_ticks = max(0, ms_to_ticks(self.cfg.lock_delay_ms))
         self.are_ticks = max(0, ms_to_ticks(self.cfg.are_ms))
         self.clear_delay_ticks = max(0, ms_to_ticks(self.cfg.line_clear_delay_ms))
@@ -380,6 +397,11 @@ class Game:
 
         cleared = B.full_rows(self.rows)
         n = len(cleared)
+        if self.cfg.cheese_rows:
+            # a cleared row that contained garbage counts as dug cheese
+            for i in cleared:
+                if any(v == -2 for v in self.styles[i]):
+                    self.cheese_on_board -= 1
         if n:
             B.clear_rows(self.rows, cleared)
             # shift the style grid the same way
@@ -502,6 +524,50 @@ class Game:
         if overflow:
             self._game_over(won=False)
 
+    # --------------------------------------------------------------- cheese
+
+    def _next_cheese_hole(self) -> int:
+        """Hole column for the next cheese row. One hole per row; the hole
+        stays in the same column for a run of consecutive rows, then moves
+        to a different column (four-tris' scheme, run lengths drawn from
+        ``cheese_hole_runs``)."""
+        if self._cheese_run <= 0 or self._cheese_hole < 0:
+            prev = self._cheese_hole
+            hole = prev
+            while hole == prev:
+                hole = self.bag.randrange(FIELD_W)
+            self._cheese_hole = hole
+            runs = self.cfg.cheese_hole_runs or (1,)
+            self._cheese_run = runs[self.bag.randrange(len(runs))]
+        self._cheese_run -= 1
+        return self._cheese_hole
+
+    def _cheese_target(self) -> int:
+        """Garbage rows the cheese stack should hold: always ``cheese_rows``
+        without a goal (infinite cheese); with a goal, capped at the lines
+        still needed so the final clear finishes on an empty board."""
+        if self.cfg.goal_lines is None:
+            return self.cfg.cheese_rows
+        return min(self.cfg.cheese_rows, max(0, self.cfg.goal_lines - self.lines))
+
+    def _cheese_refill(self) -> None:
+        """Cheese (dig) mode: rise new garbage rows so the stack holds the
+        target number of cheese rows. Called once per spawned piece (and at
+        game start), so the stack only shrinks on a tick you actually clear."""
+        if not self.cfg.cheese_rows or self.over:
+            return
+        count = self._cheese_target() - self.cheese_on_board
+        if count <= 0:
+            return
+        overflow = any(self.rows[:count])
+        for _ in range(count):
+            self.rows[:] = self.rows[1:] + [B.garbage_row(self._next_cheese_hole())]
+            self.styles[:] = self.styles[1:] + [[-2] * FIELD_W]
+        self.cheese_on_board += count
+        self.events.append({"kind": "garbage", "rows": count})
+        if overflow:
+            self._game_over(won=False)
+
     def _spawn(
         self,
         held: frozenset[Btn],
@@ -513,6 +579,7 @@ class Game:
         then the optional TGM-style IHS/IRS, then the block-out check."""
         if apply_garbage and not self.over:
             self._apply_due_garbage()
+            self._cheese_refill()  # cheese modes: top the stack back up
             if self.over:
                 return
 
