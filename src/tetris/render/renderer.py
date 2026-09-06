@@ -1,0 +1,345 @@
+"""pygame-ce renderer: playfield, ghost, hold/next, HUD, popups, screens.
+
+Draw methods only compose onto ``self.screen``; the caller owns
+``pygame.display.flip()`` (one flip per frame).
+"""
+
+from __future__ import annotations
+
+import pygame
+
+from ..engine import board as B
+from ..engine.constants import (
+    FIELD_W,
+    GARBAGE_COLOR,
+    PIECE_CELLS,
+    PIECE_COLORS,
+    PieceType,
+    VISIBLE_H,
+    VISIBLE_TOP,
+)
+from ..engine.game import Game
+
+BG = (13, 16, 21)
+PANEL = (24, 29, 37)
+PANEL_EDGE = (44, 52, 64)
+GRID = (33, 40, 50)
+BORDER = (86, 95, 108)
+TEXT = (214, 221, 230)
+TEXT_DIM = (120, 130, 144)
+ACCENT = (86, 204, 242)
+GARBAGE_METER = (196, 74, 74)
+B2B_COLOR = (240, 178, 62)
+COMBO_COLOR = (240, 106, 106)
+
+POPUP_TTL = 70  # display frames (~1.2 s at 60 fps)
+
+
+def _dim(color: tuple[int, int, int], factor: float) -> tuple[int, int, int]:
+    return tuple(min(255, int(c * factor)) for c in color)  # type: ignore[return-value]
+
+
+class Renderer:
+    def __init__(self, screen: pygame.Surface, cell: int = 30, buffer_rows: int = 2) -> None:
+        self.screen = screen
+        self.cell = cell
+        self.buffer_rows = buffer_rows
+        self.field_px_w = FIELD_W * cell
+        self.field_px_h = VISIBLE_H * cell
+        self.buffer_px_h = buffer_rows * cell
+        # field top-left (leaving room above for the buffer rows)
+        self.field_x = 340
+        self.field_y = 40 + self.buffer_px_h
+        self._font_cache: dict[int, pygame.font.Font] = {}
+        self.popups: list[dict] = []
+
+    # ------------------------------------------------------------------ util
+
+    def font(self, size: int, bold: bool = False) -> pygame.font.Font:
+        key = (size, bold)
+        if key not in self._font_cache:
+            f = pygame.font.SysFont("consolas,menlo,dejavusansmono,monospace", size, bold=bold)
+            self._font_cache[key] = f
+        return self._font_cache[key]
+
+    def text(self, s: str, x: int, y: int, size: int = 18, color=TEXT, bold: bool = False, align: str = "left") -> None:
+        surf = self.font(size, bold).render(s, True, color)
+        rect = surf.get_rect()
+        if align == "left":
+            rect.topleft = (x, y)
+        elif align == "right":
+            rect.topright = (x, y)
+        else:
+            setattr(rect, align, (x, y))
+        self.screen.blit(surf, rect)
+
+    def piece_color(self, piece: PieceType | None):
+        return GARBAGE_COLOR if piece is None else PIECE_COLORS[piece]
+
+    def draw_cell(self, px: int, py: int, size: int, color, ghost: bool = False, dim_factor: float = 1.0) -> None:
+        rect = pygame.Rect(px, py, size, size)
+        if ghost:
+            pygame.draw.rect(self.screen, _dim(color, dim_factor), rect, width=2, border_radius=3)
+            return
+        pygame.draw.rect(self.screen, _dim(color, dim_factor), rect, border_radius=2)
+        top = pygame.Rect(px + 1, py + 1, size - 2, max(2, size // 6))
+        pygame.draw.rect(self.screen, _dim(color, min(1.35, dim_factor + 0.35)), top, border_radius=2)
+
+    def draw_matrix(self, piece: PieceType, px: int, py: int, size: int, ghost: bool = False, dim: float = 1.0) -> None:
+        color = self.piece_color(piece)
+        for cx, cy in PIECE_CELLS[piece][0]:
+            self.draw_cell(px + cx * size, py + cy * size, size, color, ghost, dim)
+
+    def draw_mini_piece(self, piece: PieceType, center_x: int, center_y: int, size: int, dim: float = 1.0) -> None:
+        """Draw a piece in spawn orientation, centered on (center_x, center_y)."""
+        cells = PIECE_CELLS[piece][0]
+        min_cx = min(x for x, _ in cells)
+        max_cx = max(x for x, _ in cells)
+        min_cy = min(y for _, y in cells)
+        max_cy = max(y for _, y in cells)
+        ox = center_x - (max_cx - min_cx + 1) * size / 2 - min_cx * size
+        oy = center_y - (max_cy - min_cy + 1) * size / 2 - min_cy * size
+        color = self.piece_color(piece)
+        for x, y in cells:
+            self.draw_cell(int(ox + x * size), int(oy + y * size), size, color, dim_factor=dim)
+
+    # ----------------------------------------------------------------- frame
+
+    def draw(self, game: Game, mode: str, paused: bool = False) -> None:
+        self.screen.fill(BG)
+        self.draw_field(game)
+        self.draw_side_panels(game)
+        self.draw_stats(game, mode)
+        self.draw_popups()
+        if paused:
+            self.draw_pause()
+
+    def cell_style(self, game: Game, ry: int, x: int):
+        """Color of a locked cell from the engine's style grid."""
+        v = game.styles[ry][x]
+        return GARBAGE_COLOR if v < 0 else PIECE_COLORS[PieceType(v)]
+
+    def draw_field(self, game: Game) -> None:
+        c = self.cell
+        fx, fy = self.field_x, self.field_y
+
+        # buffer rows (dimmed) above the visible field
+        pygame.draw.rect(
+            self.screen, PANEL,
+            pygame.Rect(fx - 4, fy - self.buffer_px_h - 4, self.field_px_w + 8, self.buffer_px_h + 4),
+            border_radius=4,
+        )
+        for ry in range(VISIBLE_TOP - self.buffer_rows, VISIBLE_TOP):
+            if ry < 0:
+                continue
+            row = game.rows[ry]
+            for x in range(FIELD_W):
+                if row >> x & 1:
+                    self.draw_cell(fx + x * c, fy - (VISIBLE_TOP - ry) * c, c,
+                                   self.cell_style(game, ry, x), dim_factor=0.45)
+
+        # visible field
+        pygame.draw.rect(self.screen, PANEL, pygame.Rect(fx - 4, fy - 4, self.field_px_w + 8, self.field_px_h + 8), border_radius=4)
+        pygame.draw.rect(self.screen, BORDER, pygame.Rect(fx - 4, fy - 4, self.field_px_w + 8, self.field_px_h + 8), width=2, border_radius=4)
+        # skyline: top of the visible field
+        pygame.draw.line(self.screen, PANEL_EDGE, (fx - 4, fy), (fx + self.field_px_w + 4, fy), 1)
+
+        for i in range(VISIBLE_H):
+            ry = VISIBLE_TOP + i
+            row = game.rows[ry]
+            py = fy + i * c
+            for x in range(FIELD_W):
+                if row >> x & 1:
+                    self.draw_cell(fx + x * c, py, c, self.cell_style(game, ry, x))
+
+        if game.active is not None:
+            p = game.active
+            gy = B.ghost_y(game.rows, p.type, p.rot, p.x, p.y)
+            if gy != p.y:
+                for cx, cy in PIECE_CELLS[p.type][p.rot]:
+                    self.draw_cell(fx + (p.x + cx) * c, fy + (gy + cy - VISIBLE_TOP) * c, c,
+                                   self.piece_color(p.type), ghost=True, dim_factor=0.8)
+            for cx, cy in PIECE_CELLS[p.type][p.rot]:
+                px, py = fx + (p.x + cx) * c, fy + (p.y + cy - VISIBLE_TOP) * c
+                if p.y + cy >= VISIBLE_TOP:
+                    self.draw_cell(px, py, c, self.piece_color(p.type))
+                else:
+                    self.draw_cell(px, fy - (VISIBLE_TOP - (p.y + cy)) * c, c, self.piece_color(p.type), dim_factor=0.45)
+
+        self.draw_garbage_meter(game)
+
+    def draw_garbage_meter(self, game: Game) -> None:
+        pending = sum(len(b.rows) for b in game.garbage_queue)
+        if not pending:
+            return
+        px = self.field_x - 16
+        h = min(pending * 6, self.field_px_h)
+        pygame.draw.rect(
+            self.screen, GARBAGE_METER,
+            pygame.Rect(px, self.field_y + self.field_px_h - h, 6, h),
+            border_radius=2,
+        )
+
+    def draw_side_panels(self, game: Game) -> None:
+        c = self.cell
+
+        # hold ------------------------------------------------------------
+        hx, hy = 80, 70
+        self.text("HOLD", hx, hy - 26, 16, TEXT_DIM, bold=True)
+        pygame.draw.rect(self.screen, PANEL, pygame.Rect(hx - 10, hy - 10, 4 * 24 + 20, 2 * 24 + 20), border_radius=6)
+        if game.hold_type is not None:
+            color = self.piece_color(game.hold_type)
+            dim = 1.0 if game.can_hold else 0.35
+            offset = {"I": 0, "O": 24}.get(game.hold_type.name, 12)
+            for cx, cy in PIECE_CELLS[game.hold_type][0]:
+                self.draw_cell(hx + offset + cx * 24, hy + cy * 24, 24, color, dim_factor=dim)
+
+        # next -------------------------------------------------------------
+        nx, ny = 700, 70
+        self.text("NEXT", nx, ny - 26, 16, TEXT_DIM, bold=True)
+        size = 26
+        slot = 80
+        for i, piece in enumerate(game.queue[:5]):
+            self.draw_mini_piece(piece, nx + 56, ny + i * slot + 30, size)
+
+    def draw_stats(self, game: Game, mode: str) -> None:
+        x = 80
+        y = 250
+        self.text(mode.upper(), x, y - 40, 18, ACCENT, bold=True)
+        rows = [
+            ("SCORE", f"{game.score:,}"),
+            ("LINES", str(game.lines) if game.cfg.goal_lines is None
+             else f"{game.lines} / {game.cfg.goal_lines}"),
+            ("LEVEL", str(game.level)),
+            ("TIME", self._fmt_time(game.seconds)),
+            ("PPS", f"{game.pieces_placed / game.seconds:.2f}" if game.seconds > 1 else "-"),
+            ("ATTACK", str(game.attack_sent)),
+        ]
+        for i, (label, value) in enumerate(rows):
+            self.text(label, x, y + i * 40, 14, TEXT_DIM, bold=True)
+            self.text(value, x, y + i * 40 + 18, 20, TEXT, bold=True)
+
+        y2 = y + len(rows) * 40 + 10
+        if game.b2b_chain >= 2:
+            self.text(f"B2B x{game.b2b_chain - 1}", x, y2, 18, B2B_COLOR, bold=True)
+            y2 += 26
+        if game.combo >= 2:
+            self.text(f"{game.combo - 1} COMBO", x, y2, 18, COMBO_COLOR, bold=True)
+
+        self.text("ESC pause  R restart", x, 720, 14, TEXT_DIM)
+        self.text("Q menu  F12 screenshot", x, 740, 14, TEXT_DIM)
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        m, s = divmod(int(seconds), 60)
+        cs = int((seconds - int(seconds)) * 100)
+        return f"{m:02d}:{s:02d}.{cs:02d}"
+
+    # ---------------------------------------------------------------- popups
+
+    def add_popup(self, label: str, attack: int = 0) -> None:
+        self.popups.append({"label": label, "attack": attack, "ttl": POPUP_TTL})
+
+    def tick_popups(self) -> None:
+        for p in self.popups:
+            p["ttl"] -= 1
+        self.popups = [p for p in self.popups if p["ttl"] > 0]
+
+    def draw_popups(self) -> None:
+        cx = self.field_x + self.field_px_w // 2
+        cy = self.field_y + self.field_px_h // 3
+        for i, p in enumerate(self.popups):
+            age = 1 - p["ttl"] / POPUP_TTL
+            alpha = max(0.0, 1.0 - age * 1.4)
+            color = B2B_COLOR if p["label"].startswith("B2B") else TEXT
+            size = 24 - i * 2
+            self._blit_alpha(self.font(size, True).render(p["label"], True, color), (cx, cy + i * 30 - int(age * 14)), alpha)
+            if p["attack"] > 0:
+                self._blit_alpha(
+                    self.font(20, True).render(f"+{p['attack']}", True, COMBO_COLOR),
+                    (cx, cy + (i + 1) * 30 - int(age * 14)),
+                    alpha,
+                )
+
+    def _blit_alpha(self, surf: pygame.Surface, center: tuple[int, int], alpha: float) -> None:
+        if alpha <= 0:
+            return
+        surf = surf.copy()
+        surf.set_alpha(int(255 * alpha))
+        rect = surf.get_rect(center=center)
+        self.screen.blit(surf, rect)
+
+    # ---------------------------------------------------------------- screens
+
+    def draw_menu(self, modes: list[str], selected: int, descs: list[str]) -> None:
+        self.screen.fill(BG)
+        self.text("MODERN TETRIS", 480, 110, 44, ACCENT, bold=True, align="center")
+        self.text("Guideline engine / Jstris-style rules / pygame-ce", 480, 150, 16, TEXT_DIM, align="center")
+        for i, mode in enumerate(modes):
+            color = TEXT if i == selected else TEXT_DIM
+            prefix = "> " if i == selected else "  "
+            self.text(prefix + mode, 480, 250 + i * 52, 26, color, bold=(i == selected), align="center")
+            self.text(descs[i], 480, 250 + i * 52 + 28, 14, TEXT_DIM, align="center")
+        self.text("UP/DOWN select   ENTER start   S settings", 480, 560, 16, TEXT_DIM, align="center")
+        self.text("Arrows move  Z/X/A rotate  SPACE hard drop  C hold", 480, 640, 14, TEXT_DIM, align="center")
+
+    def draw_settings(self, items, capture_active: bool) -> None:
+        """Draw the settings screen.
+
+        ``items`` rows: (kind, label, value_text, is_selected) where kind is
+        "header" | "value" | "bind".
+        """
+        self.screen.fill(BG)
+        self.text("SETTINGS", 480, 70, 34, ACCENT, bold=True, align="center")
+        blink = pygame.time.get_ticks() // 400 % 2 == 0
+        y = 124
+        for kind, label, value, selected in items:
+            if kind == "header":
+                self.text(label, 260, y, 15, TEXT_DIM, bold=True)
+                y += 32
+                continue
+            marker = "> " if selected else "  "
+            color = TEXT if selected else TEXT_DIM
+            self.text(marker + label, 260, y, 20, color, bold=selected)
+            if capture_active and selected:
+                value = "[ press a key ]" if blink else ""
+                color = B2B_COLOR
+            self.text(value, 740, y, 20, color, bold=selected, align="right")
+            y += 30
+        self.text(
+            "UP/DOWN select   LEFT/RIGHT adjust (Shift = fine)   ENTER rebind",
+            480, 660, 14, TEXT_DIM, align="center",
+        )
+        self.text(
+            "BACKSPACE clear bind   R reset defaults   ESC back (auto-saves)",
+            480, 684, 14, TEXT_DIM, align="center",
+        )
+
+    def draw_pause(self) -> None:
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.set_alpha(170)
+        overlay.fill(BG)
+        self.screen.blit(overlay, (0, 0))
+        self.text("PAUSED", 480, 320, 40, TEXT, bold=True, align="center")
+        self.text("ESC resume   R restart   S settings   Q menu", 480, 380, 18, TEXT_DIM, align="center")
+
+    def draw_game_over(self, game: Game, mode: str) -> None:
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.set_alpha(200)
+        overlay.fill(BG)
+        self.screen.blit(overlay, (0, 0))
+        title = "PERFECT!" if game.won else "TOP OUT"
+        color = B2B_COLOR if game.won else (220, 80, 80)
+        self.text(title, 480, 200, 46, color, bold=True, align="center")
+        lines = [
+            f"TIME      {self._fmt_time(game.seconds)}",
+            f"SCORE     {game.score:,}",
+            f"LINES     {game.lines}",
+            f"PIECES    {game.pieces_placed}",
+            f"PPS       {game.pieces_placed / game.seconds:.2f}" if game.seconds > 1 else "PPS       -",
+            f"T-SPINS   {game.tspins}   QUADS {game.quads}   PC {game.perfect_clears}",
+            f"ATTACK    {game.attack_sent}",
+        ]
+        for i, line in enumerate(lines):
+            self.text(line, 480, 280 + i * 34, 20, TEXT, align="center")
+        self.text("R restart    Q menu", 480, 560, 18, TEXT_DIM, align="center")
