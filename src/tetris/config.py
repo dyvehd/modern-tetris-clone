@@ -77,16 +77,19 @@ MODES: dict[str, dict] = {
     },
     "Zen": {
         "rules": {"gravity_g": 0.02, "goal_lines": None},
-        "desc": "Endless, slow and calm",
+        "undo": True,
+        "desc": "Endless, slow and calm (Ctrl+Z undo)",
     },
     "Zen 0G": {
         "rules": {"gravity_g": 0.0, "goal_lines": None},
-        "desc": "Endless, zero gravity — pieces stay where you move them",
+        "undo": True,
+        "desc": "Endless, zero gravity — pieces stay where you move them (Ctrl+Z undo)",
     },
     "VS Sandbox": {
         "rules": {"gravity_g": 0.02, "goal_lines": None},
         "trainer": True,
-        "desc": "Garbage trainer: cancel/rise like a VS match",
+        "undo": True,
+        "desc": "Garbage trainer: cancel/rise like a VS match (Ctrl+Z undo)",
     },
 }
 

@@ -105,14 +105,14 @@ class Renderer:
 
     # ----------------------------------------------------------------- frame
 
-    def draw(self, game: Game, mode: str, paused: bool = False) -> None:
+    def draw(self, game: Game, mode: str, paused: bool = False, undo_hint: bool = False) -> None:
         self.screen.fill(BG)
         self.draw_field(game)
         self.draw_side_panels(game)
         self.draw_stats(game, mode)
         self.draw_popups()
         if paused:
-            self.draw_pause()
+            self.draw_pause(undo_hint)
 
     def cell_style(self, game: Game, ry: int, x: int):
         """Color of a locked cell from the engine's style grid."""
@@ -326,13 +326,16 @@ class Renderer:
             480, 684, 14, TEXT_DIM, align="center",
         )
 
-    def draw_pause(self) -> None:
+    def draw_pause(self, undo_hint: bool = False) -> None:
         overlay = pygame.Surface(self.screen.get_size())
         overlay.set_alpha(170)
         overlay.fill(BG)
         self.screen.blit(overlay, (0, 0))
         self.text("PAUSED", 480, 320, 40, TEXT, bold=True, align="center")
-        self.text("ESC resume   R restart   S settings   Q menu", 480, 380, 18, TEXT_DIM, align="center")
+        line = "ESC resume   R restart   S settings   Q menu"
+        if undo_hint:
+            line = "Ctrl+Z undo (in game)   " + line
+        self.text(line, 480, 380, 18, TEXT_DIM, align="center")
 
     def draw_game_over(self, game: Game, mode: str) -> None:
         overlay = pygame.Surface(self.screen.get_size())

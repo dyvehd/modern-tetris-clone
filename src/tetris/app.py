@@ -102,6 +102,7 @@ BINDABLE_KEYS: list[tuple[str, str]] = [
 DAS_MAX = 333.0
 ARR_MAX = 100.0
 SDF_MAX = 40.0
+MAX_UNDO = 500  # zen undo history depth (one snapshot per spawned piece)
 
 # gameplay keybinds: (Keybinds field, virtual button). Drives both key
 # routing and the input log, so a rebound key logs its action name.
@@ -144,6 +145,14 @@ class App:
         self.game: Game | None = None
         self.trainer = False
         self._trainer_ticks = 0
+        # zen undo (TETR.IO-style Ctrl+Z): while you control a piece we keep
+        # its spawn snapshot; when it locks, that snapshot joins the undo
+        # stack — undoing puts the placed piece back in your hands
+        self.undo_enabled = False
+        self._undo_stack: list[Game] = []
+        self._spawn_snapshot: Game | None = None
+        self._last_undo_active: object | None = None
+        self._undo_pieces = 0
         # physical key codes currently down; dedups OS auto-repeat events
         self._keys_down: set[int] = set()
         # settings screen state
@@ -187,6 +196,11 @@ class App:
         self.game = Game(rules, seed=seed)
         self.trainer = trainer
         self._trainer_ticks = 0
+        self.undo_enabled = bool(MODES[mode].get("undo", False))
+        self._undo_stack.clear()
+        self._spawn_snapshot = None
+        self._last_undo_active = None
+        self._undo_pieces = 0
         self.renderer.popups = []
         self.controller = InputController(self.cfg.input)
         self.state = self.STATE_PLAY
@@ -228,6 +242,19 @@ class App:
 
     def restart(self) -> None:
         self.start_game()
+
+    def _undo(self) -> None:
+        """Zen undo: restore the snapshot taken when the piece you just
+        placed spawned — the board, queue, hold and score go back to just
+        before that placement, with the piece back in your hands."""
+        if not self._undo_stack:
+            return
+        self.game = self._undo_stack.pop()
+        self._last_undo_active = self.game.active
+        self._spawn_snapshot = self.game.clone()
+        self._undo_pieces = self.game.pieces_placed
+        self._note("undo")
+        self.renderer.add_popup("UNDO")
 
     # ---------------------------------------------------------------- events
 
@@ -285,6 +312,9 @@ class App:
             elif key == pygame.K_q:
                 self._note("quit to menu")
                 self.state = self.STATE_MENU
+            elif (self.undo_enabled and key == pygame.K_z
+                    and event.mod & pygame.KMOD_CTRL):
+                self._undo()
             else:
                 self.route_game_key(key)
         elif self.state == self.STATE_PAUSE:
@@ -452,6 +482,18 @@ class App:
         if self.keylog is not None:  # identity compare; writes on spawn only
             self.keylog.check_piece(game.active)
 
+        # zen undo bookkeeping: a placement moves the placed piece's spawn
+        # snapshot onto the undo stack; a spawn refreshes the held snapshot
+        # (both can happen in the same tick — order matters)
+        if self.undo_enabled and not game.over:
+            if game.pieces_placed > self._undo_pieces and self._spawn_snapshot is not None:
+                self._undo_pieces = game.pieces_placed
+                self._undo_stack.append(self._spawn_snapshot)
+                del self._undo_stack[:-MAX_UNDO]
+            if game.active is not None and game.active is not self._last_undo_active:
+                self._last_undo_active = game.active
+                self._spawn_snapshot = game.clone()
+
         for ev in game.events:
             if ev.get("kind") == "clear":
                 self.renderer.add_popup(ev["label"], ev.get("attack", 0))
@@ -485,7 +527,9 @@ class App:
             self.renderer.draw(self.game, self.modes[self.mode_idx])
             self.renderer.draw_game_over(self.game, self.modes[self.mode_idx])
         else:
-            self.renderer.draw(self.game, self.modes[self.mode_idx], paused=(self.state == self.STATE_PAUSE))
+            self.renderer.draw(self.game, self.modes[self.mode_idx],
+                               paused=(self.state == self.STATE_PAUSE),
+                               undo_hint=self.undo_enabled)
         pygame.display.flip()
 
     def screenshot(self) -> None:
