@@ -28,13 +28,31 @@ against `tetris.engine.env.TetrisEnv` — see [AI environment](#ai-environment).
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[game,dev]"   # or: uv pip install ...
 .venv/bin/python -m tetris          # menu → pick a mode → Enter
-.venv/bin/pytest                    # 121 correctness tests
+.venv/bin/pytest                    # 137 correctness tests
 ```
 
 Modes: **Marathon** (Guideline curve gravity, 150 lines), **Sprint 40 Lines**
-(0.02G), **Zen** (endless 0.02G), **Zen 0G** (endless, no gravity — pieces
+(0.02G), **Cheese 10 / 18 / 100 / ∞** (dig races, see below), **Zen**
+(endless 0.02G, `Ctrl+Z` undo), **Zen 0G** (endless, no gravity — pieces
 stay where you move them; they only lock via lock delay against the stack or
-a hard drop), **VS Sandbox** (garbage trainer: sends 4 rows every 15 s).
+a hard drop), **VS Sandbox** (garbage trainer: sends 4 rows every 15 s). The
+endless modes (Zen, Zen 0G, VS Sandbox) support **undo**: `Ctrl+Z` steps the
+last placement back — the placed piece returns to your hands and the board,
+queue, hold and score revert with it.
+
+### Cheese race (dig mode)
+
+The field starts on — and is topped back up to — a stack of garbage rows
+with one hole each; the hole stays in the same column for a run of
+consecutive rows (1–5, drawn like four-tris' `GARBAGE=1,1,2,2,4,5`) before
+moving to a different column, so diggable shafts form. Every piece placement
+refills the stack, and with a goal the refill is capped at the lines still
+needed — so the cheese only runs out as you approach the goal and the last
+clear finishes the race (Jstris goals 10/18/100 plus endless; refill rule as
+in Techmino's `dig_100l`). The stack is **9 rows like Jstris**; put
+`[rules] cheese_rows = 10` in `settings.toml` for the four-tris/Techmino
+height, and `[rules] cheese_hole_runs = [1, 1, 2, 2, 4, 5]` to change the
+run-length pool.
 
 ### Controls (Jstris-like defaults)
 
@@ -46,6 +64,7 @@ a hard drop), **VS Sandbox** (garbage trainer: sends 4 rows every 15 s).
 | Rotate CW / CCW / 180 | ↑ or X / Z or Ctrl / A |
 | Hold | C or Shift |
 | Pause / restart / menu | Esc or P / R / Q |
+| Undo last placement (Zen modes) | Ctrl + Z |
 | Open settings | S (main menu) or S / O (pause) |
 | Screenshot | F12 |
 
@@ -187,7 +206,7 @@ src/tetris/
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus
   config.py        # defaults + settings.toml override
-tests/             # 121 tests pinning all of the above
+tests/             # 137 tests pinning all of the above
 ```
 
 ## Verification checklist (for pro-player review)
@@ -209,3 +228,7 @@ Things that most need human eyes on a real keyboard:
 6. **Combo attack start** — +1 garbage from the 3rd consecutive clear.
 7. **Garbage** — delay/cancel/cap/rise defaults are approximations of VS
    rules; the trainer mode exercises them.
+8. **Cheese race** — compare the stack size and refill rhythm against Jstris
+   cheese (9 rows, topped up after every placement, shrinking near the goal).
+9. **Next preview scale** — pieces drawn at board-cell size in ~3-row slots,
+   queue top aligned with the visible board top (Jstris measurements).
