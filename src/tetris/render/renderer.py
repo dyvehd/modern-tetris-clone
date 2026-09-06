@@ -184,23 +184,34 @@ class Renderer:
         c = self.cell
 
         # hold ------------------------------------------------------------
+        # Same convention as the next queue: preview pieces are drawn at
+        # full board-cell size (Jstris does this too).
         hx, hy = 80, 70
+        c = self.cell
         self.text("HOLD", hx, hy - 26, 16, TEXT_DIM, bold=True)
-        pygame.draw.rect(self.screen, PANEL, pygame.Rect(hx - 10, hy - 10, 4 * 24 + 20, 2 * 24 + 20), border_radius=6)
+        pygame.draw.rect(self.screen, PANEL, pygame.Rect(hx - 10, hy - 10, 4 * c + 20, 2 * c + 20), border_radius=6)
         if game.hold_type is not None:
             color = self.piece_color(game.hold_type)
             dim = 1.0 if game.can_hold else 0.35
-            offset = {"I": 0, "O": 24}.get(game.hold_type.name, 12)
+            offset = {"I": 0, "O": c}.get(game.hold_type.name, c // 2)
             for cx, cy in PIECE_CELLS[game.hold_type][0]:
-                self.draw_cell(hx + offset + cx * 24, hy + cy * 24, 24, color, dim_factor=dim)
+                self.draw_cell(hx + offset + cx * c, hy + cy * c, c, color, dim_factor=dim)
 
         # next -------------------------------------------------------------
-        nx, ny = 700, 70
-        self.text("NEXT", nx, ny - 26, 16, TEXT_DIM, bold=True)
-        size = 26
-        slot = 80
+        # Sized like Jstris (measured against a real 2026-09-07 screenshot:
+        # preview 408 px for a 537 px board, ~0.76 board heights tall, top
+        # edge at 0 buffer lines relative to the visible board): pieces at
+        # full board-cell size, five slots of ~3 rows, queue top aligned
+        # with the top of the visible field.
+        size = self.cell
+        slot = int(round(3.04 * self.cell))
+        nx, ny = 700, self.field_y
+        box = pygame.Rect(nx - 12, ny - 6, 4 * size + 24, 5 * slot + 12)
+        pygame.draw.rect(self.screen, PANEL, box, border_radius=6)
+        pygame.draw.rect(self.screen, PANEL_EDGE, box, width=1, border_radius=6)
+        self.text("NEXT", nx, ny - 30, 16, TEXT_DIM, bold=True)
         for i, piece in enumerate(game.queue[:5]):
-            self.draw_mini_piece(piece, nx + 56, ny + i * slot + 30, size)
+            self.draw_mini_piece(piece, nx + 2 * size, ny + i * slot + slot // 2, size)
 
     def draw_stats(self, game: Game, mode: str) -> None:
         x = 80
