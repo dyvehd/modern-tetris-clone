@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# session artifacts
+logs/
+tmp/
+tetris_*.png
+
+# personal settings (keybinds/handling); defaults live in config.py
+settings.toml
