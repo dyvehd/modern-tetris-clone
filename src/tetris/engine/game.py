@@ -166,6 +166,10 @@ class Game:
 
     # cheese (dig) mode -------------------------------------------------------
     cheese_on_board: int = field(default=0, init=False)
+    # garbage rows actually dug (cleared rows that contained cheese); the
+    # cheese goal counts these, not total line clears — clearing your own
+    # stacked lines never advances the race (Techmino's dig counter)
+    cheese_dug: int = field(default=0, init=False)
     _cheese_hole: int = field(default=-1, init=False)
     _cheese_last_clear: bool = field(default=False, init=False)
 
@@ -405,10 +409,11 @@ class Game:
         n = len(cleared)
         if self.cfg.cheese_rows:
             # a cleared row that contained garbage counts as dug cheese
-            for i in cleared:
-                if any(v == -2 for v in self.styles[i]):
-                    self.cheese_on_board -= 1
-            self._cheese_last_clear = n > 0
+            dug = sum(1 for i in cleared if any(v == -2 for v in self.styles[i]))
+            self.cheese_on_board -= dug
+            self.cheese_dug += dug
+            # the downstack combo continues only if cheese was actually dug
+            self._cheese_last_clear = dug > 0
         if n:
             B.clear_rows(self.rows, cleared)
             # shift the style grid the same way
@@ -471,7 +476,8 @@ class Game:
 
         if lockout:
             self._game_over(won=False)
-        if self.cfg.goal_lines is not None and self.lines >= self.cfg.goal_lines:
+        progress = self.cheese_dug if self.cfg.cheese_rows else self.lines
+        if self.cfg.goal_lines is not None and progress >= self.cfg.goal_lines:
             self._game_over(won=True)
 
     # ---------------------------------------------------------------- spawn
@@ -550,11 +556,11 @@ class Game:
 
     def _cheese_target(self) -> int:
         """Garbage rows the cheese stack should hold: always ``cheese_rows``
-        without a goal (infinite cheese); with a goal, capped at the lines
-        still needed so the final clear finishes on an empty board."""
+        without a goal (infinite cheese); with a goal, capped at the cheese
+        lines still needed so the final dig finishes on a drained board."""
         if self.cfg.goal_lines is None:
             return self.cfg.cheese_rows
-        return min(self.cfg.cheese_rows, max(0, self.cfg.goal_lines - self.lines))
+        return min(self.cfg.cheese_rows, max(0, self.cfg.goal_lines - self.cheese_dug))
 
     def _cheese_refill(self) -> None:
         """Cheese (dig) mode: rise new garbage rows so the stack holds the

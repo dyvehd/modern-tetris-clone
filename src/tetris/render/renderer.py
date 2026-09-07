@@ -218,10 +218,10 @@ class Renderer:
             cx = nx + 2 * size
             cy = ny + 5 * slot + 34
             if game.cfg.goal_lines is None:
-                self.text(str(game.lines), cx, cy, 38, ACCENT, bold=True, align="center")
+                self.text(str(game.cheese_dug), cx, cy, 38, ACCENT, bold=True, align="center")
                 self.text("lines dug", cx, cy + 44, 14, TEXT_DIM, align="center")
             else:
-                remaining = max(0, game.cfg.goal_lines - game.lines)
+                remaining = max(0, game.cfg.goal_lines - game.cheese_dug)
                 self.text(str(remaining), cx, cy, 38, ACCENT, bold=True, align="center")
                 self.text("lines remaining", cx, cy + 44, 14, TEXT_DIM, align="center")
 
@@ -229,10 +229,19 @@ class Renderer:
         x = 80
         y = 250
         self.text(mode.upper(), x, y - 40, 18, ACCENT, bold=True)
+        # in cheese modes the goal counts dug garbage, not total line clears
+        if game.cfg.cheese_rows:
+            if game.cfg.goal_lines is None:
+                dig = str(game.cheese_dug)
+            else:
+                dig = f"{game.cheese_dug} / {game.cfg.goal_lines}"
+            lines_row = ("DIG", dig)
+        else:
+            lines_row = ("LINES", str(game.lines) if game.cfg.goal_lines is None
+                         else f"{game.lines} / {game.cfg.goal_lines}")
         rows = [
             ("SCORE", f"{game.score:,}"),
-            ("LINES", str(game.lines) if game.cfg.goal_lines is None
-             else f"{game.lines} / {game.cfg.goal_lines}"),
+            lines_row,
             ("LEVEL", str(game.level)),
             ("TIME", self._fmt_time(game.seconds)),
             ("PPS", f"{game.pieces_placed / game.seconds:.2f}" if game.seconds > 1 else "-"),
@@ -364,6 +373,10 @@ class Renderer:
             f"TIME      {self._fmt_time(game.seconds)}",
             f"SCORE     {game.score:,}",
             f"LINES     {game.lines}",
+        ]
+        if game.cfg.cheese_rows:
+            lines.append(f"DIGGED    {game.cheese_dug}")
+        lines += [
             f"PIECES    {game.pieces_placed}",
             f"PPS       {game.pieces_placed / game.seconds:.2f}" if game.seconds > 1 else "PPS       -",
             f"T-SPINS   {game.tspins}   QUADS {game.quads}   PC {game.perfect_clears}",

@@ -97,7 +97,7 @@ def test_placement_without_a_clear_never_digs():
 def test_refill_capped_at_lines_still_needed():
     game = make_game(cheese_rows=9, goal_lines=10)
     game.rows[:] = [0] * FIELD_H
-    game.lines = 8
+    game.cheese_dug = 8
     game.cheese_on_board = 0
     game._cheese_refill()
     assert game.cheese_on_board == 2  # min(9, 10 - 8)
@@ -112,13 +112,36 @@ def test_reaching_the_goal_wins():
     game.styles[-1] = [-2] * FIELD_W
     game.cheese_on_board = 1
     game.lines = 9
+    game.cheese_dug = 9
     place(game, PieceType.I, x=1, y=36, rot=1)  # fills the col-3 shaft
     hard_drop(game)
-    assert game.lines == 10
+    assert game.cheese_dug == 10
     assert game.over and game.won
     # the last clear was counted as dug, and the refill target had hit 0,
     # so no fresh cheese rose after it
     assert game.cheese_on_board == 0
+
+
+def test_clearing_your_own_stack_does_not_count_toward_the_goal():
+    game = make_game(cheese_rows=9, goal_lines=10)
+    place(game, PieceType.O, x=4, y=29)  # spawn first (no-op top-up)
+    # replace the field with two player-built rows and a 2-wide shaft: no
+    # cheese anywhere, but a double is one drop away
+    game.rows[:] = [0] * FIELD_H
+    game.styles[:] = [[-1] * FIELD_W for _ in range(FIELD_H)]
+    built = FULL_ROW & ~((1 << 4) | (1 << 5))
+    game.rows[-2] = built
+    game.rows[-1] = built
+    game.styles[-2] = [PieceType.O.value] * FIELD_W
+    game.styles[-1] = [PieceType.O.value] * FIELD_W
+    game.cheese_on_board = 0
+    hard_drop(game)  # the O sinks into the shaft and doubles
+    assert game.lines == 2
+    assert game.cheese_dug == 0  # own lines never count
+    assert not game.over  # the race is untouched
+    # and since no cheese was dug, the downstack combo counts as broken:
+    # the next spawn brings the cheese back
+    assert game.cheese_on_board == 9
 
 
 def test_infinite_cheese_refills_forever():
