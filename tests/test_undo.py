@@ -11,6 +11,7 @@ import pytest  # noqa: E402
 
 pygame = pytest.importorskip("pygame")
 
+from tetris.app import App  # noqa: E402
 from tetris.engine.game import Btn  # noqa: E402
 
 
@@ -111,3 +112,49 @@ def test_undo_disabled_outside_zen_modes():
     _undo_key(app)
     assert app.game.pieces_placed == placed
     assert app._undo_stack == []
+
+
+def test_undo_reaches_into_the_previous_game_after_restart():
+    app = _app_for("Zen")
+    _hard_drop(app)
+    after_one = list(app.game.rows)
+    _hard_drop(app)
+    app.restart()
+    assert app.game.pieces_placed == 0
+    _undo_key(app)
+    # Ctrl+Z after R revives the game you just left: its board after the
+    # first placement, with that game's second piece back in your hands
+    assert app.game.pieces_placed == 1
+    assert list(app.game.rows) == after_one
+    # the revived game keeps playing and taking new snapshots
+    _hard_drop(app)
+    assert app.game.pieces_placed == 2
+    _undo_key(app)
+    assert app.game.pieces_placed == 1
+    assert list(app.game.rows) == after_one
+
+
+def test_undo_after_top_out_from_the_over_screen():
+    app = _app_for("Zen")
+    _hard_drop(app)
+    after_one = list(app.game.rows)
+    _hard_drop(app)
+    app.game._game_over(won=False)
+    app.state = App.STATE_OVER
+    app.render()  # the over screen (with the undo hint) draws fine
+    _undo_key(app)
+    assert app.state == App.STATE_PLAY
+    assert app.game.over is False
+    assert app.game.pieces_placed == 1
+    assert list(app.game.rows) == after_one
+
+
+def test_history_does_not_leak_into_non_undo_modes():
+    app = _app_for("Zen")
+    _hard_drop(app)
+    assert app._undo_stack
+    app.mode_idx = app.modes.index("Sprint 40 Lines")
+    app.start_game()
+    assert app._undo_stack == []
+    _undo_key(app)  # a no-op: sprint has no undo
+    assert app.game.pieces_placed == 0

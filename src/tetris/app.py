@@ -197,7 +197,11 @@ class App:
         self.trainer = trainer
         self._trainer_ticks = 0
         self.undo_enabled = bool(MODES[mode].get("undo", False))
-        self._undo_stack.clear()
+        if not self.undo_enabled:
+            self._undo_stack.clear()  # the history belongs to zen-style modes
+        # per-game undo bookkeeping restarts with the new game, but the
+        # history itself survives restarts: R then Ctrl+Z reaches into the
+        # game you just left, top-out included (TETR.IO zen behaviour)
         self._spawn_snapshot = None
         self._last_undo_active = None
         self._undo_pieces = 0
@@ -243,18 +247,20 @@ class App:
     def restart(self) -> None:
         self.start_game()
 
-    def _undo(self) -> None:
+    def _undo(self) -> bool:
         """Zen undo: restore the snapshot taken when the piece you just
         placed spawned — the board, queue, hold and score go back to just
-        before that placement, with the piece back in your hands."""
+        before that placement, with the piece back in your hands. Returns
+        True if a snapshot was restored."""
         if not self._undo_stack:
-            return
+            return False
         self.game = self._undo_stack.pop()
         self._last_undo_active = self.game.active
         self._spawn_snapshot = self.game.clone()
         self._undo_pieces = self.game.pieces_placed
         self._note("undo")
         self.renderer.add_popup("UNDO")
+        return True
 
     # ---------------------------------------------------------------- events
 
@@ -331,6 +337,12 @@ class App:
         elif self.state == self.STATE_OVER:
             if key in parse_key_names(keys.restart):
                 self.restart()
+            elif (self.undo_enabled and key == pygame.K_z
+                    and event.mod & pygame.KMOD_CTRL):
+                # zen: step back out of a top-out into the finished game
+                if self._undo():
+                    self.state = self.STATE_PLAY
+                    self._note("undo after top out")
             elif key == pygame.K_q or key == pygame.K_ESCAPE:
                 self._note("quit to menu")
                 self.state = self.STATE_MENU
@@ -525,7 +537,8 @@ class App:
             self.renderer.draw_menu(self.modes, self.mode_idx, [MODES[m]["desc"] for m in self.modes])
         elif self.state == self.STATE_OVER:
             self.renderer.draw(self.game, self.modes[self.mode_idx])
-            self.renderer.draw_game_over(self.game, self.modes[self.mode_idx])
+            self.renderer.draw_game_over(self.game, self.modes[self.mode_idx],
+                                         undo_hint=self.undo_enabled)
         else:
             self.renderer.draw(self.game, self.modes[self.mode_idx],
                                paused=(self.state == self.STATE_PAUSE),

@@ -361,7 +361,7 @@ class Renderer:
             line = "Ctrl+Z undo (in game)   " + line
         self.text(line, 480, 380, 18, TEXT_DIM, align="center")
 
-    def draw_game_over(self, game: Game, mode: str) -> None:
+    def draw_game_over(self, game: Game, mode: str, undo_hint: bool = False) -> None:
         overlay = pygame.Surface(self.screen.get_size())
         overlay.set_alpha(200)
         overlay.fill(BG)
@@ -384,4 +384,5 @@ class Renderer:
         ]
         for i, line in enumerate(lines):
             self.text(line, 480, 280 + i * 34, 20, TEXT, align="center")
-        self.text("R restart    Q menu", 480, 560, 18, TEXT_DIM, align="center")
+        bottom = "Ctrl+Z undo    R restart    Q menu" if undo_hint else "R restart    Q menu"
+        self.text(bottom, 480, 560, 18, TEXT_DIM, align="center")

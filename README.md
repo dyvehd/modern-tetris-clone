@@ -28,7 +28,7 @@ against `tetris.engine.env.TetrisEnv` — see [AI environment](#ai-environment).
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[game,dev]"   # or: uv pip install ...
 .venv/bin/python -m tetris          # menu → pick a mode → Enter
-.venv/bin/pytest                    # 140 correctness tests
+.venv/bin/pytest                    # 143 correctness tests
 ```
 
 Modes: **Marathon** (Guideline curve gravity, 150 lines), **Sprint 40 Lines**
@@ -38,7 +38,9 @@ stay where you move them; they only lock via lock delay against the stack or
 a hard drop), **VS Sandbox** (garbage trainer: sends 4 rows every 15 s). The
 endless modes (Zen, Zen 0G, VS Sandbox) support **undo**: `Ctrl+Z` steps the
 last placement back — the placed piece returns to your hands and the board,
-queue, hold and score revert with it.
+queue, hold and score revert with it. The history survives restarts:
+`R` then `Ctrl+Z` reaches into the game you just left, and `Ctrl+Z` on the
+game-over screen steps back out of a top-out (TETR.IO zen behaviour).
 
 ### Cheese race (dig mode)
 
@@ -212,7 +214,7 @@ src/tetris/
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus
   config.py        # defaults + settings.toml override
-tests/             # 140 tests pinning all of the above
+tests/             # 143 tests pinning all of the above
 ```
 
 ## Verification checklist (for pro-player review)
