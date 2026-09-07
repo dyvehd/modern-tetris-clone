@@ -28,7 +28,7 @@ against `tetris.engine.env.TetrisEnv` — see [AI environment](#ai-environment).
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[game,dev]"   # or: uv pip install ...
 .venv/bin/python -m tetris          # menu → pick a mode → Enter
-.venv/bin/pytest                    # 137 correctness tests
+.venv/bin/pytest                    # 139 correctness tests
 ```
 
 Modes: **Marathon** (Guideline curve gravity, 150 lines), **Sprint 40 Lines**
@@ -47,14 +47,16 @@ with one hole each. **Messiness** (TETR.IO's term, default **100%**) is the
 per-row chance that the hole moves to a different column: at 100% — Jstris
 default cheese — two adjacent rows never share a hole, so nothing lines up
 for an I piece; at 0% every hole sits in the same column (clean, four-tris
-style). Every piece placement refills the stack, and with a goal the refill
-is capped at the lines still needed — so the cheese only runs out as you
-approach the goal and the last clear finishes the race (Jstris goals
+style). The **refill trigger** is Jstris's by default: a downstack combo
+keeps the field reduced, and the cheese only comes back (all at once, up to
+the goal cap) when a placement clears nothing. With a goal the refill is
+capped at the lines still needed either way — the cheese only runs out as
+you approach the goal and the last clear finishes the race (Jstris goals
 10/18/100 plus endless). The stack is **9 rows like Jstris**; put
 `[rules] cheese_rows = 10` in `settings.toml` for the four-tris/Techmino
 height, `[rules] cheese_messiness = 50` to loosen/tighten the holes, and
-`[rules] cheese_refill_on_clear = true` for TETR.IO's instant refill (see
-below).
+`[rules] cheese_refill_on_clear = true` for TETR.IO's instant refill
+(topped back up after every placement, clears included).
 
 ### Controls (Jstris-like defaults)
 
@@ -208,7 +210,7 @@ src/tetris/
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus
   config.py        # defaults + settings.toml override
-tests/             # 137 tests pinning all of the above
+tests/             # 139 tests pinning all of the above
 ```
 
 ## Verification checklist (for pro-player review)

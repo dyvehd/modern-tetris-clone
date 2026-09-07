@@ -408,6 +408,7 @@ class Game:
             for i in cleared:
                 if any(v == -2 for v in self.styles[i]):
                     self.cheese_on_board -= 1
+            self._cheese_last_clear = n > 0
         if n:
             B.clear_rows(self.rows, cleared)
             # shift the style grid the same way
@@ -584,7 +585,13 @@ class Game:
         then the optional TGM-style IHS/IRS, then the block-out check."""
         if apply_garbage and not self.over:
             self._apply_due_garbage()
-            self._cheese_refill()  # cheese modes: top the stack back up
+            # Jstris: a downstack combo keeps the field reduced; the cheese
+            # only comes back when a placement clears nothing. TETR.IO
+            # (cheese_refill_on_clear): topped back up after every placement.
+            if self.cfg.cheese_rows and (
+                self.cfg.cheese_refill_on_clear or not self._cheese_last_clear
+            ):
+                self._cheese_refill()
             if self.over:
                 return
 

@@ -57,20 +57,33 @@ def test_messiness_is_a_per_row_column_change_chance():
     assert 80 < changes < 220
 
 
-def test_clearing_a_line_refills_the_stack():
-    game = make_game(cheese_rows=9, goal_lines=10)
+def test_jstris_refill_waits_for_the_combo_to_break():
+    game = make_game(cheese_rows=9, goal_lines=None)
     hole = hole_of(game.rows[-1])
     place(game, PieceType.I, x=hole - 2, y=36, rot=1)  # vertical I down the shaft
     hard_drop(game)
-    # the I completes the bottom row — plus any run rows sharing its hole
-    # (clearing a whole shaft in one drop is the point of hole runs)
-    assert 1 <= game.lines <= 4
-    # dug rows are refilled back up to the goal-capped target
-    assert game.cheese_on_board == min(9, 10 - game.lines)
+    # messiness 100: the row above has a different hole, so exactly one line
+    assert game.lines == 1
+    assert game.cheese_on_board == 8  # the downstack combo keeps the field reduced
+    # a non-clearing placement ends the combo: the stack tops back up to 9
+    game.rows[32] = FULL_ROW & ~(1 << 4)  # stack top: no hole under cols 0-1
+    place(game, PieceType.O, x=0, y=0)
+    hard_drop(game)
+    assert game.lines == 1  # the O cleared nothing
+    assert game.cheese_on_board == 9
+
+
+def test_tetrio_refill_flag_tops_up_even_after_clears():
+    game = make_game(cheese_rows=9, goal_lines=None, cheese_refill_on_clear=True)
+    hole = hole_of(game.rows[-1])
+    place(game, PieceType.I, x=hole - 2, y=36, rot=1)
+    hard_drop(game)
+    assert game.lines == 1
+    assert game.cheese_on_board == 9  # topped back up on the same placement
     assert bin(game.rows[39]).count("1") == FIELD_W - 1  # bottom row is cheese
 
 
-def test_no_clear_means_no_refill():
+def test_placement_without_a_clear_never_digs():
     game = make_game(cheese_rows=9, goal_lines=10)
     place(game, PieceType.O, x=0, y=0)  # ghost-drops from the top
     hard_drop(game)
