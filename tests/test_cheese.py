@@ -1,17 +1,16 @@
-"""Cheese (dig) race: starting stack, hole runs, refill, goal cap, win.
+"""Cheese (dig) race: starting stack, messiness, refill trigger, goal cap.
 
-Mechanics follow four-tris' cheese mode (top-up after placements, hole runs
-of 1/1/2/2/4/5 rows) with Jstris' 9-row stack, and Techmino's dig_100l rule
-of capping the refill at the lines still needed (verified against
-Techmino's parts/eventsets/dig_*.lua, 2026-09-07).
+Mechanics: Jstris-style dirty cheese (adjacent holes never align) with a
+per-row hole-change chance ("messiness", TETR.IO's term), topped back up
+only when a placement clears nothing (Jstris) or after every placement
+(TETR.IO). Cross-checked against four-tris' cheese code and Techmino's
+parts/eventsets/dig_*.lua + getHolePos, 2026-09-07.
 """
 
 from conftest import hard_drop, make_game, place
 
 from tetris.config import AppConfig, make_mode_config
 from tetris.engine.constants import FIELD_H, FIELD_W, FULL_ROW, PieceType
-
-RUN_POOL = (1, 1, 2, 2, 4, 5)  # four-tris' default GARBAGE=1,1,2,2,4,5
 
 
 def hole_of(row: int) -> int:
@@ -36,20 +35,26 @@ def test_non_cheese_game_has_no_cheese():
     assert all(row == 0 for row in game.rows)
 
 
-def test_holes_form_runs_that_move_column():
-    game = make_game(cheese_rows=9, goal_lines=10)
+def test_messiness_100_holes_never_align_adjacent_rows():
+    game = make_game(cheese_rows=9, goal_lines=None)
     holes = [hole_of(row) for row in game.rows[-9:]]
-    runs = []  # (column, length) per run
-    for hole in holes:
-        if runs and runs[-1][0] == hole:
-            runs[-1] = (hole, runs[-1][1] + 1)
-        else:
-            runs.append((hole, 1))
-    # every run length comes from the pool, and the hole changes column
-    # between runs (never a second shaft right next to / on the old one)
-    assert all(length in RUN_POOL for _, length in runs)
-    assert len(runs) >= 2
-    assert all(a != b for (a, _), (b, _) in zip(runs, runs[1:]))
+    holes += [game._next_cheese_hole() for _ in range(40)]
+    assert all(a != b for a, b in zip(holes, holes[1:]))
+
+
+def test_messiness_0_pins_a_single_column():
+    game = make_game(cheese_rows=9, goal_lines=None, cheese_messiness=0.0)
+    holes = [hole_of(row) for row in game.rows[-9:]]
+    holes += [game._next_cheese_hole() for _ in range(40)]
+    assert len(set(holes)) == 1
+
+
+def test_messiness_is_a_per_row_column_change_chance():
+    game = make_game(cheese_rows=9, goal_lines=None, cheese_messiness=50.0)
+    holes = [game._next_cheese_hole() for _ in range(300)]
+    changes = sum(a != b for a, b in zip(holes, holes[1:]))
+    # 50% chance to move per row: ~150 of 299 transitions (seed-pinned)
+    assert 80 < changes < 220
 
 
 def test_clearing_a_line_refills_the_stack():
@@ -109,15 +114,6 @@ def test_infinite_cheese_refills_forever():
     game._cheese_refill()
     assert game.cheese_on_board == 9
     assert not game.over
-
-
-def test_custom_hole_run_pool():
-    game = make_game(cheese_rows=6, goal_lines=None, cheese_hole_runs=(6,))
-    holes = [hole_of(row) for row in game.rows[-6:]]
-    assert len(set(holes)) == 1  # a 6-row run: one straight shaft
-    game.cheese_on_board = 5  # pretend one row was dug; refill draws a new run
-    game._cheese_refill()
-    assert hole_of(game.rows[-1]) != holes[0]  # the hole moves to a new column
 
 
 # --- mode presets / config ---------------------------------------------------

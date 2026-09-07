@@ -101,10 +101,16 @@ class GameConfig:
     # needed, so the last clear finishes on an empty board (Techmino's
     # dig_100l rule).
     cheese_rows: int = 0
-    # How many consecutive garbage rows share one hole before the hole moves
-    # to a different column (four-tris' GARBAGE run-length pool; Jstris
-    # cheese plays the same: mostly 1–2 row runs, some longer shafts).
-    cheese_hole_runs: tuple[int, ...] = (1, 1, 2, 2, 4, 5)
+    # Cheese messiness (TETR.IO's term, %): the chance per row that the hole
+    # moves to a different column. 0% pins every hole to a single column
+    # (clean, four-tris-style shafts); 100% — Jstris default cheese — never
+    # lets two adjacent rows share a hole, so nothing lines up for an I.
+    cheese_messiness: float = 100.0
+    # Refill trigger. Jstris (False): a downstack combo keeps the field
+    # reduced — the cheese is only topped back up by a placement that clears
+    # nothing. TETR.IO-style (True): topped back up after every placement,
+    # clears included.
+    cheese_refill_on_clear: bool = False
 
 
 @dataclass
@@ -161,7 +167,7 @@ class Game:
     # cheese (dig) mode -------------------------------------------------------
     cheese_on_board: int = field(default=0, init=False)
     _cheese_hole: int = field(default=-1, init=False)
-    _cheese_run: int = field(default=0, init=False)
+    _cheese_last_clear: bool = field(default=False, init=False)
 
     # stats -----------------------------------------------------------------
     tick_count: int = field(default=0, init=False)
@@ -527,20 +533,19 @@ class Game:
     # --------------------------------------------------------------- cheese
 
     def _next_cheese_hole(self) -> int:
-        """Hole column for the next cheese row. One hole per row; the hole
-        stays in the same column for a run of consecutive rows, then moves
-        to a different column (four-tris' scheme, run lengths drawn from
-        ``cheese_hole_runs``)."""
-        if self._cheese_run <= 0 or self._cheese_hole < 0:
-            prev = self._cheese_hole
-            hole = prev
-            while hole == prev:
-                hole = self.bag.randrange(FIELD_W)
-            self._cheese_hole = hole
-            runs = self.cfg.cheese_hole_runs or (1,)
-            self._cheese_run = runs[self.bag.randrange(len(runs))]
-        self._cheese_run -= 1
-        return self._cheese_hole
+        """Hole column for the next cheese row: with probability
+        ``cheese_messiness`` the hole moves to a different column than the
+        row above, otherwise it stays (TETR.IO's messiness model). At 100%
+        adjacent holes never align (Jstris); at 0% the hole never moves."""
+        prev = self._cheese_hole
+        messiness = min(max(self.cfg.cheese_messiness, 0.0), 100.0) / 100.0
+        if prev >= 0 and self.bag.random() >= messiness:
+            return prev
+        hole = prev
+        while hole == prev:
+            hole = self.bag.randrange(FIELD_W)
+        self._cheese_hole = hole
+        return hole
 
     def _cheese_target(self) -> int:
         """Garbage rows the cheese stack should hold: always ``cheese_rows``

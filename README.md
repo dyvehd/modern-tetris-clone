@@ -43,16 +43,18 @@ queue, hold and score revert with it.
 ### Cheese race (dig mode)
 
 The field starts on — and is topped back up to — a stack of garbage rows
-with one hole each; the hole stays in the same column for a run of
-consecutive rows (1–5, drawn like four-tris' `GARBAGE=1,1,2,2,4,5`) before
-moving to a different column, so diggable shafts form. Every piece placement
-refills the stack, and with a goal the refill is capped at the lines still
-needed — so the cheese only runs out as you approach the goal and the last
-clear finishes the race (Jstris goals 10/18/100 plus endless; refill rule as
-in Techmino's `dig_100l`). The stack is **9 rows like Jstris**; put
+with one hole each. **Messiness** (TETR.IO's term, default **100%**) is the
+per-row chance that the hole moves to a different column: at 100% — Jstris
+default cheese — two adjacent rows never share a hole, so nothing lines up
+for an I piece; at 0% every hole sits in the same column (clean, four-tris
+style). Every piece placement refills the stack, and with a goal the refill
+is capped at the lines still needed — so the cheese only runs out as you
+approach the goal and the last clear finishes the race (Jstris goals
+10/18/100 plus endless). The stack is **9 rows like Jstris**; put
 `[rules] cheese_rows = 10` in `settings.toml` for the four-tris/Techmino
-height, and `[rules] cheese_hole_runs = [1, 1, 2, 2, 4, 5]` to change the
-run-length pool.
+height, `[rules] cheese_messiness = 50` to loosen/tighten the holes, and
+`[rules] cheese_refill_on_clear = true` for TETR.IO's instant refill (see
+below).
 
 ### Controls (Jstris-like defaults)
 
