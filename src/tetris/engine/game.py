@@ -26,6 +26,7 @@ from enum import IntEnum
 
 from . import board as B
 from .constants import (
+    EDITOR_GRAY,
     FIELD_H,
     FIELD_W,
     KICKS_180,
@@ -140,6 +141,10 @@ class Game:
     styles: list[list[int]] = field(init=False)
     bag: SevenBag = field(init=False)
     queue: list[PieceType] = field(default_factory=list, init=False)
+    # position within the current 7-bag of already-dealt pieces (0-6); pure
+    # phase bookkeeping for the queue preview's bag separators and the zen
+    # queue editor's offset. queue[0] is the (bag_pos+1)-th piece of its bag.
+    bag_pos: int = field(default=0, init=False)
     active: ActivePiece | None = field(default=None, init=False)
     hold_type: PieceType | None = field(default=None, init=False)
     can_hold: bool = field(default=True, init=False)
@@ -653,6 +658,7 @@ class Game:
 
     def _take_from_queue(self) -> PieceType:
         self._refill_queue()
+        self.bag_pos = (self.bag_pos + 1) % 7
         return self.queue.pop(0)
 
     def _do_hold(self, held: frozenset[Btn]) -> None:
@@ -684,6 +690,43 @@ class Game:
         self.spawn_delay = 0
         self.active = None
         self._spawn(frozenset(), forced_type=piece_type)
+
+    def set_queue(self, pieces: list[PieceType], bag_offset: int = 0) -> None:
+        """Replace the upcoming queue (zen sandbox queue editor, four-tris
+        BagSet-style). The entered sequence is dealt first; fresh shuffled
+        7-bags follow once it runs out. ``bag_offset`` (0-6) is how many
+        pieces of the current bag were already dealt before the sequence —
+        it positions where the bag boundaries (preview separators) fall.
+        An empty sequence clears the queue, i.e. back to pure random bags."""
+        self.queue[:] = list(pieces)
+        self.bag_pos = bag_offset % 7
+        self._refill_queue()
+
+    # mouse board editor (zen sandbox, four-tris EditBoard-style) ----------
+    # Direct rows/styles writes; no lock, no line clear, no stats. A paint
+    # over an occupied cell only restyles it (the rows bit is already set).
+
+    def edit_paint(self, ry: int, x: int, style: int = EDITOR_GRAY) -> bool:
+        """Occupy a cell with an editor block (gray by default, a piece's
+        color after tetromino recognition). Returns True if it changed."""
+        if not (0 <= ry < FIELD_H and 0 <= x < FIELD_W):
+            return False
+        if (self.rows[ry] >> x & 1) and self.styles[ry][x] == style:
+            return False
+        self.rows[ry] |= 1 << x
+        self.styles[ry][x] = style
+        return True
+
+    def edit_erase(self, ry: int, x: int) -> bool:
+        """Empty a cell whatever its style. Returns True if it changed."""
+        if not (0 <= ry < FIELD_H and 0 <= x < FIELD_W):
+            return False
+        if not (self.rows[ry] >> x & 1):
+            self.styles[ry][x] = -1
+            return False
+        self.rows[ry] &= ~(1 << x)
+        self.styles[ry][x] = -1
+        return True
 
     def set_rows(self, rows: list[int]) -> None:
         self.rows[:] = rows

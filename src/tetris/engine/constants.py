@@ -193,6 +193,10 @@ TSPIN_UPGRADE_KICKS: dict[tuple[int, int], frozenset[int]] = {
     (2, 3): frozenset({4}),
 }
 
+# Sidebar style values (per-cell, rendering only): -1 empty, -2 garbage,
+# -3 mouse-editor gray. Same gray color as garbage.
+EDITOR_GRAY = -3
+
 # Renderer palette (plain RGB tuples; no pygame types here).
 PIECE_COLORS: dict[PieceType, tuple[int, int, int]] = {
     PieceType.I: (49, 199, 239),
@@ -204,3 +208,20 @@ PIECE_COLORS: dict[PieceType, tuple[int, int, int]] = {
     PieceType.Z: (239, 32, 41),
 }
 GARBAGE_COLOR = (118, 124, 134)
+
+# Piece letters for text notation (queue strings, dialogs, logs).
+PIECE_LETTERS: dict[PieceType, str] = {
+    PieceType.I: "I",
+    PieceType.J: "J",
+    PieceType.L: "L",
+    PieceType.O: "O",
+    PieceType.S: "S",
+    PieceType.T: "T",
+    PieceType.Z: "Z",
+}
+
+
+def piece_from_letter(ch: str) -> PieceType:
+    """Parse a piece letter (case-insensitive); KeyError on anything else."""
+    table = {v: k for k, v in PIECE_LETTERS.items()}
+    return table[ch.upper()]

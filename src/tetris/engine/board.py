@@ -8,9 +8,11 @@ Numba/Cython port) can work without object overhead.
 from __future__ import annotations
 
 from .constants import (
+    EDITOR_GRAY,
     FIELD_H,
     FIELD_W,
     FULL_ROW,
+    PIECE_CELLS,
     PIECE_ROWS,
     PieceType,
 )
@@ -69,6 +71,68 @@ def clear_rows(rows: list[int], indices: list[int]) -> None:
 def garbage_row(hole: int) -> int:
     """A garbage row: all columns filled except ``hole``."""
     return FULL_ROW & ~(1 << hole)
+
+
+def gray_component(
+    styles: list[list[int]], ry: int, x: int, max_size: int = 5
+) -> list[tuple[int, int]] | None:
+    """The 4-connected cells of editor-gray style containing (ry, x).
+
+    Returns None as soon as the component exceeds ``max_size`` cells (so a
+    large gray region never gets auto-colored). Assumes (ry, x) itself is
+    editor-gray.
+    """
+    seen = {(ry, x)}
+    out: list[tuple[int, int]] = [(ry, x)]
+    queue = [(ry, x)]
+    while queue:
+        cy, cx = queue.pop()
+        for ny, nx in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+            if (ny, nx) in seen or not (0 <= ny < FIELD_H and 0 <= nx < FIELD_W):
+                continue
+            if styles[ny][nx] == EDITOR_GRAY:
+                seen.add((ny, nx))
+                out.append((ny, nx))
+                if len(out) > max_size:
+                    return None
+                queue.append((ny, nx))
+    return out
+
+
+def piece_from_cells(cells) -> PieceType | None:
+    """The tetromino exactly matching a set of 4 connected cells, else None.
+
+    Any connected 4-cell polyomino is one of the 7 tetrominoes, so the match
+    is unique (chirality included: an L-shaped set is an L or a J, never
+    both). Cells are (row, col) pairs; they are translated and compared
+    against every rotation of every piece, so position/orientation don't
+    matter — only the shape does.
+    """
+    cells = sorted(set(cells))
+    if len(cells) != 4:
+        return None
+    # connected? (every cell must reach every other via 4-directional steps)
+    reach = {cells[0]}
+    queue = [cells[0]]
+    while queue:
+        cy, cx = queue.pop()
+        for nb in ((cy - 1, cx), (cy + 1, cx), (cy, cx - 1), (cy, cx + 1)):
+            if nb in cells and nb not in reach:
+                reach.add(nb)
+                queue.append(nb)
+    if len(reach) != 4:
+        return None
+    min_y = min(y for _, y in cells)
+    min_x = min(x for x, _ in cells)
+    norm = tuple(sorted((y - min_y, x - min_x) for x, y in cells))
+    for piece, rots in PIECE_CELLS.items():
+        for rot_cells in rots:
+            rmin_y = min(y for _, y in rot_cells)
+            rmin_x = min(x for x, _ in rot_cells)
+            rnorm = tuple(sorted((y - rmin_y, x - rmin_x) for x, y in rot_cells))
+            if rnorm == norm:
+                return piece
+    return None
 
 
 def from_ascii(art: str) -> list[int]:
