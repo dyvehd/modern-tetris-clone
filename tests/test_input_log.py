@@ -189,6 +189,10 @@ def test_held_rotate_key_does_not_pre_rotate_spawns(tmp_path):
 
     app = _game_app()
 
+    # the random seed may deal an O piece first — O rotation is a no-op, so
+    # force a T to make the rotation assertion deterministic
+    app.game.spawn_forced(PieceType.T)
+    app.game.tick([])
     pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_UP))
     app.handle_events()
     app.logic_tick()  # spawn piece 1, rotate it CW

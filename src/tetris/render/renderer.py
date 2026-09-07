@@ -52,6 +52,31 @@ class Renderer:
         self.field_y = 40 + self.buffer_px_h
         self._font_cache: dict[int, pygame.font.Font] = {}
         self.popups: list[dict] = []
+        # next-queue box rect, published for hit-testing (queue editor)
+        self.next_rect: pygame.Rect | None = None
+
+    # -------------------------------------------------------------- picking
+
+    def cell_at(self, pos) -> tuple[int, int] | None:
+        """The (row, col) a screen position falls on, for the mouse editor.
+
+        Covers the visible field plus the drawn buffer strip; None anywhere
+        else (including just outside the field).
+        """
+        px, py = pos
+        fx, c = self.field_x, self.cell
+        if not fx <= px < fx + self.field_px_w:
+            return None
+        top = self.field_y
+        if top <= py < top + self.field_px_h:
+            return VISIBLE_TOP + (py - top) // c, (px - fx) // c
+        if top - self.buffer_px_h <= py < top:
+            row = VISIBLE_TOP - self.buffer_rows + (py - (top - self.buffer_px_h)) // c
+            return int(row), (px - fx) // c
+        return None
+
+    def hit_next_box(self, pos) -> bool:
+        return self.next_rect is not None and self.next_rect.collidepoint(pos)
 
     # ------------------------------------------------------------------ util
 
@@ -105,10 +130,11 @@ class Renderer:
 
     # ----------------------------------------------------------------- frame
 
-    def draw(self, game: Game, mode: str, paused: bool = False, undo_hint: bool = False) -> None:
+    def draw(self, game: Game, mode: str, paused: bool = False, undo_hint: bool = False,
+             edit: bool = False, hover=None) -> None:
         self.screen.fill(BG)
-        self.draw_field(game)
-        self.draw_side_panels(game)
+        self.draw_field(game, hover=hover if edit else None)
+        self.draw_side_panels(game, bag_separators=edit)
         self.draw_stats(game, mode)
         self.draw_popups()
         if paused:
@@ -119,7 +145,7 @@ class Renderer:
         v = game.styles[ry][x]
         return GARBAGE_COLOR if v < 0 else PIECE_COLORS[PieceType(v)]
 
-    def draw_field(self, game: Game) -> None:
+    def draw_field(self, game: Game, hover=None) -> None:
         c = self.cell
         fx, fy = self.field_x, self.field_y
 
@@ -166,6 +192,12 @@ class Renderer:
                 else:
                     self.draw_cell(px, fy - (VISIBLE_TOP - (p.y + cy)) * c, c, self.piece_color(p.type), dim_factor=0.45)
 
+        if hover is not None:
+            ry, x = hover
+            py = fy + (ry - VISIBLE_TOP) * c
+            pygame.draw.rect(self.screen, TEXT, pygame.Rect(fx + x * c, py, c, c),
+                             width=2, border_radius=2)
+
         self.draw_garbage_meter(game)
 
     def draw_garbage_meter(self, game: Game) -> None:
@@ -180,7 +212,7 @@ class Renderer:
             border_radius=2,
         )
 
-    def draw_side_panels(self, game: Game) -> None:
+    def draw_side_panels(self, game: Game, bag_separators: bool = False) -> None:
         c = self.cell
 
         # hold ------------------------------------------------------------
@@ -210,8 +242,18 @@ class Renderer:
         pygame.draw.rect(self.screen, PANEL, box, border_radius=6)
         pygame.draw.rect(self.screen, PANEL_EDGE, box, width=1, border_radius=6)
         self.text("NEXT", nx, ny - 30, 16, TEXT_DIM, bold=True)
+        self.next_rect = box
         for i, piece in enumerate(game.queue[:5]):
             self.draw_mini_piece(piece, nx + 2 * size, ny + i * slot + slot // 2, size)
+        if bag_separators:
+            # four-tris-style bag separators: a line between preview slots
+            # wherever a 7-bag boundary falls (queue[i] is the (bag_pos+i+1)-th
+            # piece of its bag, so the boundary is after piece 6-bag_pos)
+            for i in range(4):
+                if (game.bag_pos + i + 1) % 7 == 0:
+                    y = ny + (i + 1) * slot - 8
+                    pygame.draw.line(self.screen, BORDER,
+                                     (box.left + 4, y), (box.right - 4, y), 2)
 
         # cheese counter (four-tris/Jstris style, under the next queue) -----
         if game.cfg.cheese_rows:
@@ -360,6 +402,50 @@ class Renderer:
         if undo_hint:
             line = "Ctrl+Z undo (in game)   " + line
         self.text(line, 480, 380, 18, TEXT_DIM, align="center")
+
+    def draw_queue_dialog(self, qd: dict) -> None:
+        """The zen queue editor: a sequence of piece letters + a 7-bag
+        offset. ``qd`` keys: seq, off, field (0/1), error."""
+        overlay = pygame.Surface(self.screen.get_size())
+        overlay.set_alpha(170)
+        overlay.fill(BG)
+        self.screen.blit(overlay, (0, 0))
+        panel = pygame.Rect(480, 360, 520, 300)
+        panel.center = (480, 360)
+        pygame.draw.rect(self.screen, PANEL, panel, border_radius=8)
+        pygame.draw.rect(self.screen, BORDER, panel, width=2, border_radius=8)
+        self.text("EDIT QUEUE", 480, panel.top + 24, 26, ACCENT, bold=True, align="center")
+
+        # sequence field: letters drawn in their piece colors
+        seq_y = panel.top + 86
+        active = qd["field"] == 0
+        self.text("sequence", panel.left + 32, seq_y - 26, 14, TEXT_DIM, bold=True)
+        cursor = "_" if active and pygame.time.get_ticks() // 400 % 2 == 0 else " "
+        letters = (qd["seq"] + cursor)[-24:]
+        for i, ch in enumerate(letters):
+            color = PIECE_COLORS[PieceType("IJLOSTZ".index(ch))] if ch in "IJLOSTZ" else TEXT
+            if ch == cursor.strip() and qd["seq"]:
+                color = TEXT
+            self.text(ch, panel.left + 32 + i * 20, seq_y, 26, color, bold=True)
+        if not qd["seq"]:
+            self.text(cursor if cursor.strip() else "_", panel.left + 32, seq_y, 26, TEXT, bold=True)
+
+        # offset field
+        off_y = seq_y + 70
+        active_off = qd["field"] == 1
+        self.text("7-bag offset", panel.left + 32, off_y - 26, 14, TEXT_DIM, bold=True)
+        marker = "> " if active_off else "  "
+        off_cursor = "_" if active_off and pygame.time.get_ticks() // 400 % 2 == 0 else ""
+        self.text(marker + str(qd["off"]) + off_cursor, panel.left + 32, off_y, 26,
+                   TEXT if active_off else TEXT_DIM, bold=True)
+        seq_marker = "> " if qd["field"] == 0 else "  "
+        self.text(seq_marker, panel.left + 8, seq_y, 26, TEXT_DIM, bold=True)
+        self.text(f"= pieces already dealt from the current bag ({qd['off']})", panel.left + 100, off_y + 8, 13, TEXT_DIM)
+
+        if qd["error"]:
+            self.text(qd["error"], 480, panel.bottom - 74, 16, (239, 99, 99), bold=True, align="center")
+        self.text("letters I J L O S T Z   TAB switch field", 480, panel.bottom - 46, 14, TEXT_DIM, align="center")
+        self.text("ENTER apply   ESC cancel   empty sequence = random bags", 480, panel.bottom - 26, 14, TEXT_DIM, align="center")
 
     def draw_game_over(self, game: Game, mode: str, undo_hint: bool = False) -> None:
         overlay = pygame.Surface(self.screen.get_size())

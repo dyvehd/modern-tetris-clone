@@ -133,8 +133,6 @@ def piece_from_cells(cells) -> PieceType | None:
             if rnorm == norm:
                 return piece
     return None
-
-
 def from_ascii(art: str) -> list[int]:
     """Build a 40-row field from bottom-anchored ASCII art.
 

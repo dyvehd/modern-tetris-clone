@@ -9,7 +9,7 @@ import math
 import random
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pygame
@@ -24,6 +24,8 @@ from .config import (
     make_mode_config,
     save_config,
 )
+from .engine import board as B
+from .engine.constants import PIECE_LETTERS, piece_from_letter
 from .engine.game import Btn, Game
 from .input import InputConfig, InputController, InputLogger
 from .render.renderer import Renderer
@@ -104,6 +106,22 @@ ARR_MAX = 100.0
 SDF_MAX = 40.0
 MAX_UNDO = 500  # zen undo history depth (one snapshot per spawned piece)
 
+
+@dataclass
+class _EditStroke:
+    """One mouse drag on the board (a click is a 1-cell stroke).
+
+    ``cells`` are the distinct cells this stroke changed, in order —
+    four-tris's StrokeCoord: 4 gray cells get recognized as a tetromino,
+    the 5th reverts them to gray. ``pushed_undo`` snapshots the board once
+    per stroke so Ctrl+Z reverts the whole edit.
+    """
+
+    erase: bool
+    cells: list[tuple[int, int]] = field(default_factory=list)
+    seen: set = field(default_factory=set)
+    pushed_undo: bool = False
+
 # gameplay keybinds: (Keybinds field, virtual button). Drives both key
 # routing and the input log, so a rebound key logs its action name.
 _GAME_BTNS: tuple[tuple[str, Btn], ...] = (
@@ -153,6 +171,16 @@ class App:
         self._spawn_snapshot: Game | None = None
         self._last_undo_active: object | None = None
         self._undo_pieces = 0
+        # zen sandbox mouse editor (four-tris style): board painting and the
+        # queue editor. A stroke paints editor-gray cells as you drag and
+        # auto-colors exactly-4-cell tetromino strokes with the piece color.
+        self.edit_enabled = False
+        self._edit_stroke: _EditStroke | None = None
+        self._edit_last_pos: tuple[int, int] | None = None
+        self._hover_cell: tuple[int, int] | None = None
+        # queue editor dialog state (None = closed): dict with keys
+        # seq (str), off (str), field (0=seq 1=offset), error (str)
+        self.queue_edit: dict | None = None
         # physical key codes currently down; dedups OS auto-repeat events
         self._keys_down: set[int] = set()
         # settings screen state
@@ -199,6 +227,11 @@ class App:
         self.undo_enabled = bool(MODES[mode].get("undo", False))
         if not self.undo_enabled:
             self._undo_stack.clear()  # the history belongs to zen-style modes
+        self.edit_enabled = bool(MODES[mode].get("edit", False))
+        self._edit_stroke = None
+        self._edit_last_pos = None
+        self._hover_cell = None
+        self.queue_edit = None
         # per-game undo bookkeeping restarts with the new game, but the
         # history itself survives restarts: R then Ctrl+Z reaches into the
         # game you just left, top-out included (TETR.IO zen behaviour)
@@ -290,6 +323,13 @@ class App:
             elif event.type == pygame.KEYUP:
                 self._keys_down.discard(event.key)
                 self.handle_keyup(event.key)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+                self.handle_mouse_buttondown(event.pos, event.button, shift)
+            elif event.type == pygame.MOUSEMOTION:
+                self.handle_mouse_motion(event.pos, event.buttons)
+            elif event.type == pygame.MOUSEBUTTONUP:
+                self.handle_mouse_buttonup(event.button)
         return True
 
     def handle_key(self, key: int, event: pygame.event.Event) -> bool:
@@ -298,6 +338,8 @@ class App:
         keys = self.cfg.keys
         if key in parse_key_names(keys.screenshot):
             self.screenshot()
+        if self.queue_edit is not None:  # modal: the queue dialog owns keys
+            return self._queue_dialog_key(key)
         if self.state == self.STATE_MENU:
             if key in (pygame.K_UP, pygame.K_w):
                 self.mode_idx = (self.mode_idx - 1) % len(self.modes)
@@ -354,8 +396,8 @@ class App:
         # log releases only in a game context; menu key-ups have no down
         in_game = self.state in (self.STATE_PLAY, self.STATE_PAUSE, self.STATE_OVER)
         keys = self.cfg.keys
-        for field, btn in _GAME_BTNS:
-            if key in parse_key_names(getattr(keys, field)):
+        for field_name, btn in _GAME_BTNS:
+            if key in parse_key_names(getattr(keys, field_name)):
                 self.controller.release(btn)
                 if self.keylog is not None and in_game:
                     self.keylog.key(btn, False)
@@ -363,11 +405,178 @@ class App:
     def route_game_key(self, key: int) -> None:
         keys = self.cfg.keys
         c = self.controller
-        for field, btn in _GAME_BTNS:
-            if key in parse_key_names(getattr(keys, field)):
+        for field_name, btn in _GAME_BTNS:
+            if key in parse_key_names(getattr(keys, field_name)):
                 c.press(btn)
                 if self.keylog is not None:
                     self.keylog.key(btn, True)
+
+    # ------------------------------------------------- mouse board editor
+
+    def _editing(self) -> bool:
+        return (
+            self.edit_enabled
+            and self.state == self.STATE_PLAY
+            and self.game is not None
+            and not self.game.over
+            and self.queue_edit is None
+        )
+
+    def handle_mouse_buttondown(self, pos, button: int, shift: bool) -> None:
+        if not self._editing():
+            return
+        if button == 1 and self.renderer.hit_next_box(pos):
+            self._open_queue_edit()
+            return
+        if button not in (1, 3):
+            return
+        erase = button == 3 or shift  # right click or shift+left erases
+        self._edit_stroke = _EditStroke(erase=erase)
+        self._edit_last_pos = pos
+        self._edit_apply_at(pos)
+
+    def handle_mouse_motion(self, pos, buttons) -> None:
+        if self._editing():
+            cell = self.renderer.cell_at(pos)
+            self._hover_cell = cell  # None when off the field
+        stroke = self._edit_stroke
+        if stroke is None or not buttons[0] and not buttons[2]:
+            self._edit_last_pos = pos
+            return
+        # interpolate along the motion so fast drags leave no gaps
+        # (four-tris samples 7 steps between mouse polls)
+        x0, y0 = self._edit_last_pos if self._edit_last_pos is not None else pos
+        x1, y1 = pos
+        dist = max(abs(x1 - x0), abs(y1 - y0))
+        steps = max(1, dist // max(1, self.renderer.cell // 2))
+        for i in range(steps + 1):
+            t = i / steps
+            self._edit_apply_at((round(x0 + (x1 - x0) * t), round(y0 + (y1 - y0) * t)))
+        self._edit_last_pos = pos
+
+    def handle_mouse_buttonup(self, button: int) -> None:
+        if button in (1, 3):
+            self._edit_stroke = None
+            self._edit_last_pos = None
+
+    def _edit_apply_at(self, pos) -> None:
+        """Apply the active stroke's paint/erase to the cell under ``pos``."""
+        stroke = self._edit_stroke
+        if stroke is None or self.game is None:
+            return
+        cell = self.renderer.cell_at(pos)
+        if cell is None or cell in stroke.seen:
+            # one paint per distinct cell per stroke: interpolation samples
+            # revisit cells, and a revisit must not repaint an
+            # auto-colored tetromino cell back to gray
+            return
+        ry, x = cell
+        game = self.game
+        occupied = game.rows[ry] >> x & 1
+        if stroke.erase and not occupied:
+            return
+        if not stroke.pushed_undo:
+            # the pre-edit board joins the undo stack BEFORE the first
+            # change of the stroke — Ctrl+Z reverts the whole stroke at once
+            stroke.pushed_undo = True
+            self._undo_stack.append(game.clone())
+            del self._undo_stack[:-MAX_UNDO]
+            self._note("board edit stroke" + (" (erase)" if stroke.erase else ""))
+        changed = game.edit_erase(ry, x) if stroke.erase else game.edit_paint(ry, x)
+        if not changed:
+            return
+        stroke.seen.add(cell)
+        stroke.cells.append(cell)
+        if stroke.erase:
+            return
+        # four-tris AutoColor: while the stroke is 1-3 cells, any gray
+        # component completed to exactly 4 by this paint becomes a piece;
+        # the 4th stroke cell resolves the stroke itself; the 5th reverts
+        # the first four to gray. PieceType.I is IntEnum value 0, so the
+        # recognizer result must be tested against None, never truthiness.
+        n = len(stroke.cells)
+        if n < 4:
+            comp = B.gray_component(game.styles, ry, x)
+            if comp is not None and len(comp) == 4:
+                piece = B.piece_from_cells(comp)
+                if piece is not None:
+                    for cy, cx in comp:
+                        game.edit_paint(cy, cx, piece.value)
+        elif n == 4:
+            piece = B.piece_from_cells(stroke.cells)
+            if piece is not None:
+                for cy, cx in stroke.cells:
+                    game.edit_paint(cy, cx, piece.value)
+        elif n == 5:
+            # the stroke went past 4 cells: it is not a tetromino gesture,
+            # so the first four go back to plain gray
+            for cy, cx in stroke.cells[:4]:
+                game.edit_paint(cy, cx)
+
+    # ---------------------------------------------------- queue edit dialog
+
+    def _open_queue_edit(self) -> None:
+        """Open the queue editor (four-tris BagSet): replace the upcoming
+        pieces with a typed sequence + a 7-bag offset. Prefilled with the
+        current queue; emptying the sequence returns to random bags."""
+        assert self.game is not None
+        self.queue_edit = {
+            "seq": "".join(PIECE_LETTERS[p] for p in self.game.queue),
+            "off": "0",
+            "field": 0,  # 0 = sequence, 1 = offset
+            "error": "",
+        }
+        self.controller.release_all()
+        self._note("queue editor opened")
+
+    def _queue_dialog_key(self, key: int) -> bool:
+        qd = self.queue_edit
+        if key in (pygame.K_ESCAPE, pygame.K_q):
+            self.queue_edit = None
+        elif key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            self._apply_queue_edit()
+        elif key in (pygame.K_TAB, pygame.K_UP, pygame.K_DOWN):
+            qd["field"] = 1 - qd["field"]
+            qd["error"] = ""
+        elif key in (pygame.K_BACKSPACE, pygame.K_DELETE):
+            if qd["field"] == 0:
+                qd["seq"] = qd["seq"][:-1]
+            else:
+                qd["off"] = "0"
+            qd["error"] = ""
+        else:
+            ch = pygame.key.name(key)
+            if len(ch) == 1:
+                if qd["field"] == 0:
+                    if ch.upper() in "IJLOSTZ":
+                        qd["seq"] += ch.upper()
+                        qd["error"] = ""
+                    else:
+                        qd["error"] = "sequence: letters I J L O S T Z only"
+                elif ch.isdigit():
+                    qd["off"] = ch  # single-digit field
+                    qd["error"] = ""
+                else:
+                    qd["error"] = "offset: one digit 0-6"
+        return True  # the dialog swallows every key while open
+
+    def _apply_queue_edit(self) -> None:
+        qd = self.queue_edit
+        game = self.game
+        assert qd is not None and game is not None
+        pieces = [piece_from_letter(c) for c in qd["seq"]]
+        off = int(qd["off"]) if qd["off"].isdigit() else 0
+        if not 0 <= off <= 6:
+            qd["error"] = "offset must be 0-6"
+            return
+        if list(game.queue) != pieces or game.bag_pos != off:
+            # like a board edit: the pre-edit state joins the undo stack
+            self._undo_stack.append(game.clone())
+            del self._undo_stack[:-MAX_UNDO]
+            game.set_queue(pieces, bag_offset=off)
+            self.renderer.add_popup("QUEUE SET")
+            self._note(f"queue set: {qd['seq'] or '(random)'} offset {off}")
+        self.queue_edit = None
 
     # -------------------------------------------------------------- settings
 
@@ -488,6 +697,8 @@ class App:
         self.renderer.tick_popups()
         if self.state != self.STATE_PLAY or self.game is None:
             return
+        if self.queue_edit is not None:
+            return  # the queue dialog freezes the game while open
         game = self.game
         actions, held = self.controller.update()
         game.tick(actions, held)
@@ -540,9 +751,13 @@ class App:
             self.renderer.draw_game_over(self.game, self.modes[self.mode_idx],
                                          undo_hint=self.undo_enabled)
         else:
+            edit = self.edit_enabled and self.state == self.STATE_PLAY
             self.renderer.draw(self.game, self.modes[self.mode_idx],
                                paused=(self.state == self.STATE_PAUSE),
-                               undo_hint=self.undo_enabled)
+                               undo_hint=self.undo_enabled, edit=edit,
+                               hover=self._hover_cell if edit else None)
+            if self.queue_edit is not None:
+                self.renderer.draw_queue_dialog(self.queue_edit)
         pygame.display.flip()
 
     def screenshot(self) -> None:
