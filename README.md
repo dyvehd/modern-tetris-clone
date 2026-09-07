@@ -28,7 +28,7 @@ against `tetris.engine.env.TetrisEnv` — see [AI environment](#ai-environment).
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[game,dev]"   # or: uv pip install ...
 .venv/bin/python -m tetris          # menu → pick a mode → Enter
-.venv/bin/pytest                    # 143 correctness tests
+.venv/bin/pytest                    # 175 correctness tests
 ```
 
 Modes: **Marathon** (Guideline curve gravity, 150 lines), **Sprint 40 Lines**
@@ -41,6 +41,7 @@ last placement back — the placed piece returns to your hands and the board,
 queue, hold and score revert with it. The history survives restarts:
 `R` then `Ctrl+Z` reaches into the game you just left, and `Ctrl+Z` on the
 game-over screen steps back out of a top-out (TETR.IO zen behaviour).
+The zen modes are also **mouse-editable sandboxes** (see below).
 
 ### Cheese race (dig mode)
 
@@ -62,6 +63,34 @@ height, `[rules] cheese_messiness = 50` to loosen/tighten the holes, and
 `[rules] cheese_refill_on_clear = true` for TETR.IO's instant refill
 (topped back up after every placement, clears included).
 
+### Zen sandbox editors (four-tris inspired)
+
+In the zen modes (Zen, Zen 0G, VS Sandbox) the playfield and the queue are
+directly editable with the mouse:
+
+- **Left click / drag** paints gray blocks; **right click** or
+  **Shift + left click** (draggable too) erases any cell. Painting works on
+  the visible field and the buffer strip shown above it, and is interpolated
+  so fast drags leave no gaps. Every stroke is one `Ctrl+Z` undo step.
+- **4-cell drag = tetromino**: dragging across exactly 4 cells that form a
+  connected shape colors them with that piece's color (a straight line
+  becomes a cyan I, an L-shape a J or an L by chirality, ...). Any connected
+  4-cell shape is one of the 7 tetrominoes, so the match is always unique.
+  A 5th cell reverts the four to gray — the coloring only happens for
+  *exactly* 4. Like four-tris's AutoColor, separate clicks that complete a
+  4-cell gray component also color it; oversized regions never recolor.
+  Edited lines behave exactly like placed ones (they clear normally).
+- **Queue editor**: left click the next-pieces preview to open a dialog.
+  Type a sequence of piece letters (`IJLOSTZ`, any length — prefilled with
+  the current queue; empty = back to random bags) and a **7-bag offset**
+  (0–6, default 0): how many pieces of the current bag were already dealt
+  before your sequence, i.e. where the bag boundaries fall. `TAB` switches
+  fields, `ENTER` applies, `ESC` cancels. The queue then deals your sequence
+  followed by fresh shuffled 7-bags, and the preview draws **bag
+  separators** at the boundaries (offset 2 with a 7-piece sequence shows
+  the first separator after 5 pieces). The game freezes while the dialog is
+  open, and a queue edit is also one `Ctrl+Z` step.
+
 ### Controls (Jstris-like defaults)
 
 | Action | Keys |
@@ -72,7 +101,9 @@ height, `[rules] cheese_messiness = 50` to loosen/tighten the holes, and
 | Rotate CW / CCW / 180 | ↑ or X / Z or Ctrl / A |
 | Hold | C or Shift |
 | Pause / restart / menu | Esc or P / R / Q |
-| Undo last placement (Zen modes) | Ctrl + Z |
+| Undo last action (Zen modes) | Ctrl + Z |
+| Paint / erase board cells (Zen modes) | left mouse / right or Shift+left |
+| Edit the piece queue (Zen modes) | left click the next preview |
 | Open settings | S (main menu) or S / O (pause) |
 | Screenshot | F12 |
 
@@ -214,7 +245,7 @@ src/tetris/
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus
   config.py        # defaults + settings.toml override
-tests/             # 143 tests pinning all of the above
+tests/             # 175 tests pinning all of the above
 ```
 
 ## Verification checklist (for pro-player review)
@@ -240,3 +271,6 @@ Things that most need human eyes on a real keyboard:
    cheese (9 rows, topped up after every placement, shrinking near the goal).
 9. **Next preview scale** — pieces drawn at board-cell size in ~3-row slots,
    queue top aligned with the visible board top (Jstris measurements).
+10. **Sandbox editors** — compare the 4-cell auto-coloring and the queue
+    editor against four-tris (stroke behavior, the 5th-cell revert, the bag
+    offset's effect on the preview separators).
