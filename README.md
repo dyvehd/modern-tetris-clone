@@ -425,6 +425,17 @@ unchanged (`--device cuda`), on the RTX Pro 6000 server.
 .venv/py.sh examples/cheese_learner.py --max-level 10 --distill-episodes 4000
 ```
 
+- **DAgger hard-state mining** (`tetris.ai.dagger`): behavioral cloning
+  leaves a compounding-error gap — the policy's rare missteps land on board
+  states the teacher never visited, and ~1% of level-2 episodes top out
+  that the beam wins easily (measured: 99% win but 2.71 mean pieces vs the
+  beam's 2.18). DAgger closes the distribution shift: roll the *current*
+  policy, label every visited state with the *teacher's* move (mixture
+  play, beta decaying 0.8→0), re-distill. Measured on the RTX 3050:
+  7 rounds × 400 episodes → 2.51 mean pieces at the same 99% win rate.
+  The remaining gap to the beam is scale (rounds, episodes, net size) —
+  the RTX Pro 6000 workload.
+
 ## Project layout
 
 ```
