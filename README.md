@@ -350,6 +350,38 @@ The eval-driven agents never top out (greedy: 40% win at level 10) and
 roughly halve pieces-per-line — the reference numbers for the curriculum
 ladder. Run `examples/cheese_baselines.py` for the live table.
 
+## AI weight tuning (rung-1 learning)
+
+`tetris.ai.tuning` — cross-entropy method over the downstack eval weights,
+the historical quality jump of heuristic Tetris (Dellacherie → BCTS) applied
+to the cheese objective: candidates play real seeded episodes through the
+*search agent itself*, and the cost is mean pieces-to-clear with failures
+charged the full piece cap — survival is a hard constraint, never a
+tradeable.
+
+- **Cost** = capped mean pieces across the training levels (``levels=(3,5,10)``).
+  Single-level training measurably overfits: weights tuned at level 10
+  alone won level 10 (4.185 vs 4.322 pieces/line) but *regressed* levels 3-5.
+- **Search**: Gaussian sampling around the elite mean, incumbent always
+  evaluated (no-regression guarantee), per-weight clip bounds, smoothing
+  blend, fork-pool parallelism — a whole generation evaluates in one
+  wall-clock generation time (~90 s for 24 candidates × 40 episodes × 3
+  levels on a 16-core laptop).
+- **Determinism**: identical config → identical trajectory (seeded sampler,
+  fixed episode seeds).
+- Tuned models land in `models/*.json` with full history;
+  `examples/validate_weights.py` compares a tuned agent to the hand-set
+  baseline across the curriculum ladder.
+
+```python
+from tetris.ai.tuning import TuningConfig, tune
+
+best, history = tune(TuningConfig(
+    agent="beam20x4", levels=(3, 5, 10),
+    episodes=40, generations=12, candidates=24,
+))
+```
+
 ## Project layout
 
 ```
@@ -369,6 +401,7 @@ src/tetris/
     agents.py      # baselines: random, greedy dig
     eval.py        # downstack linear eval (Dellacherie-lineage features)
     search.py      # 1-ply + beam agents (hold-as-branch, quiescence leaves)
+    tuning.py      # cross-entropy weight tuning (rung-1 learning)
   input/           # DAS/ARR controller (no pygame)
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus
