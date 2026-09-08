@@ -34,7 +34,7 @@ from __future__ import annotations
 from ..engine import board as B
 from ..engine.constants import FIELD_H, PieceType
 from .agents import BaseAgent
-from .cheese import Decision, Obs, apply_placement
+from .cheese import Decision, Obs, apply_placement, candidate_moves
 from .eval import EvalWeights, eval_board
 from .movegen import Placement, enumerate_placements
 
@@ -82,12 +82,9 @@ class OnePlyAgent(BaseAgent):
 
 
 def _candidates(obs: Obs) -> list[tuple[Placement, bool]]:
-    """(placement, hold) pairs: every active-piece placement, plus the
-    hold piece's placements when hold is usable."""
-    out = [(p, False) for p in obs.placements()]
-    if obs.can_hold and obs.hold_piece is not None:
-        out += [(p, True) for p in obs.hold_placements()]
-    return out
+    """(placement, hold) pairs — the shared action-space definition in
+    :func:`tetris.ai.cheese.candidate_moves`."""
+    return candidate_moves(obs)
 
 
 class _Node:
