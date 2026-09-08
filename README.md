@@ -51,10 +51,11 @@ per-row chance that the hole moves to a different column: at 100% — Jstris
 default cheese — two adjacent rows never share a hole, so nothing lines up
 for an I piece; at 0% every hole sits in the same column (clean, four-tris
 style). The **goal counts only dug cheese** — clearing lines of your own
-stack never advances the counter, nor keeps the downstack combo alive.
-The **refill trigger** is Jstris's by default: a downstack combo
-keeps the field reduced, and the cheese only comes back (all at once, up to
-the goal cap) when a placement digs no cheese. With a goal the refill is
+stack never advances the counter. The **refill trigger** is Jstris's by
+default: a downstack combo keeps the field reduced, and the cheese only
+comes back (all at once, up to the goal cap) when a placement clears
+nothing — clearing player junk without touching cheese keeps the combo,
+so it keeps the field reduced too. With a goal the refill is
 capped at the cheese lines still needed either way — the cheese only runs
 out as you approach the goal and the last dig finishes the race (Jstris
 goals 10/18/100 plus endless). The stack is **9 rows like Jstris**; put
@@ -268,7 +269,8 @@ Things that most need human eyes on a real keyboard:
 7. **Garbage** — delay/cancel/cap/rise defaults are approximations of VS
    rules; the trainer mode exercises them.
 8. **Cheese race** — compare the stack size and refill rhythm against Jstris
-   cheese (9 rows, topped up after every placement, shrinking near the goal).
+   cheese (9 rows, topped up after every placement that clears nothing, combo
+   junk clears included, shrinking near the goal).
 9. **Next preview scale** — pieces drawn at board-cell size in ~3-row slots,
    queue top aligned with the visible board top (Jstris measurements).
 10. **Sandbox editors** — compare the 4-cell auto-coloring and the queue
