@@ -73,6 +73,28 @@ def test_jstris_refill_waits_for_the_combo_to_break():
     assert game.cheese_on_board == 9
 
 
+def test_clearing_player_junk_keeps_the_combo_and_suppresses_refill():
+    # Jstris: the downstack combo is "cleared any line", not "dug cheese" —
+    # a placement that clears only player junk keeps the combo alive, so the
+    # field stays reduced (no refill) even though no cheese was dug
+    game = make_game(cheese_rows=9, goal_lines=None)
+    hole = hole_of(game.rows[-1])
+    place(game, PieceType.I, x=hole - 2, y=36, rot=1)  # dig: combo active
+    hard_drop(game)
+    assert game.combo == 1 and game.cheese_on_board == 8
+    # a player row with one gap at col 0, sitting right on the cheese: a
+    # vertical I down col 0 completes it — a clean clear, no cheese dug
+    game.rows[30] = FULL_ROW & ~1
+    game.styles[30] = [PieceType.O.value] * FIELD_W
+    game.styles[30][0] = -1
+    place(game, PieceType.I, x=-2, y=28, rot=1)
+    hard_drop(game)
+    assert game.lines == 2  # the junk row cleared
+    assert game.cheese_dug == 1  # but no cheese was in it
+    assert game.combo == 2  # the combo is alive
+    assert game.cheese_on_board == 8  # ...so Jstris tops nothing back up
+
+
 def test_tetrio_refill_flag_tops_up_even_after_clears():
     game = make_game(cheese_rows=9, goal_lines=None, cheese_refill_on_clear=True)
     hole = hole_of(game.rows[-1])
@@ -139,8 +161,13 @@ def test_clearing_your_own_stack_does_not_count_toward_the_goal():
     assert game.lines == 2
     assert game.cheese_dug == 0  # own lines never count
     assert not game.over  # the race is untouched
-    # and since no cheese was dug, the downstack combo counts as broken:
-    # the next spawn brings the cheese back
+    # the clear DID keep the downstack combo alive (Jstris counts any line),
+    # so this placement brings no cheese back; the NEXT placement, clearing
+    # nothing, does
+    assert game.cheese_on_board == 0
+    place(game, PieceType.O, x=0, y=0)
+    hard_drop(game)
+    assert game.lines == 2  # cleared nothing
     assert game.cheese_on_board == 9
 
 
