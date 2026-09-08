@@ -302,3 +302,47 @@ def test_curriculum_runs_and_reports(tmp_path):
         assert (tmp_path / "cheese_policy_L1.json").exists()
     # max_level=1: the ladder stops after the first report either way
     assert cur.level == 1
+
+
+def test_ladder_dagger_rounds_run_and_stage_checkpoints(tmp_path):
+    # DAgger-in-ladder wiring: with dagger_rounds=1 the train_level pass
+    # collects policy-distribution states (parallel), labels them with the
+    # teacher, re-distills, and writes stage checkpoints
+    torch.manual_seed(0)
+    net = PolicyNet(hidden=16, layers=1, seed=0)
+    agent = PolicyAgent(net)
+    cur = Curriculum(
+        CurriculumConfig(
+            start_level=1, max_level=1, reference="1ply",
+            gate_episodes=4, gate_seed0=777,
+            checkpoint_dir=str(tmp_path),
+            dagger_rounds=1, dagger_episodes=4, dagger_epochs=1,
+            workers=2,
+        ),
+        net,
+        TrainConfig(iterations=1, episodes=2, lr=1e-3, seed0=0, device="cpu"),
+    )
+    stats = cur.train_level(agent, iterations=1)
+    assert len(stats) == 1
+    # stage checkpoints from every completed stage (no distill here, so
+    # only the reinforced + daggered ones exist)
+    for tag in ("L1_reinforced", "L1_daggered"):
+        p = tmp_path / f"cheese_policy_{tag}.json"
+        assert p.exists(), tag
+
+
+def test_ladder_dagger_seed_bands_disjoint():
+    # the DAgger and distill seed bands must be disjoint from the gate band
+    # and from each other by construction
+    cfg = CurriculumConfig()
+    assert cfg.gate_seed0 == 900_000_000
+    cur = Curriculum(cfg, PolicyNet(hidden=8, layers=1, seed=0),
+                     TrainConfig(iterations=1, episodes=1, device="cpu"))
+    for level in (1, 2, 5, 10):
+        cur.level = level
+        d0 = cur._distill_seed0()
+        assert d0 == 100_000_000 + 1_000_000 * level
+        assert cur._dagger_seed0(3) == 200_000_000 + 1_000_000 * level + 30_000
+        # bands are disjoint from the gate band and from each other
+        assert d0 < 1_000_000_000
+        assert 200_000_000 <= cur._dagger_seed0(0) < 1_000_000_000

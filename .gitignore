@@ -12,3 +12,6 @@ tetris_*.png
 
 # personal settings (keybinds/handling); defaults live in config.py
 settings.toml
+
+# local notes
+.local_note.txt
