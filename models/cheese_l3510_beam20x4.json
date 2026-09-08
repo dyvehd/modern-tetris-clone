@@ -1,0 +1,246 @@
+{
+  "config": {
+    "agent": "beam20x4",
+    "levels": [
+      3,
+      5,
+      10
+    ],
+    "episodes": 40,
+    "generations": 12,
+    "candidates": 24,
+    "elite_frac": 0.25,
+    "smoothing": 0.7,
+    "seed0": 0,
+    "piece_cap": 400
+  },
+  "tunable_bounds": {
+    "holes": [
+      -40.0,
+      -1.0
+    ],
+    "covered": [
+      -10.0,
+      0.0
+    ],
+    "height": [
+      -2.0,
+      0.0
+    ],
+    "bumpiness": [
+      -4.0,
+      0.0
+    ],
+    "row_transitions": [
+      -4.0,
+      0.0
+    ],
+    "col_transitions": [
+      -8.0,
+      0.0
+    ],
+    "wells": [
+      -8.0,
+      0.0
+    ],
+    "lowest_row_hole": [
+      -60.0,
+      -1.0
+    ]
+  },
+  "best_cost": 20.325,
+  "best_weights": {
+    "lines": 50.0,
+    "holes": -14.042795159327898,
+    "covered": -1.8331179933425883,
+    "height": 0.0,
+    "bumpiness": -0.44097355116651965,
+    "row_transitions": -0.8374849944311575,
+    "col_transitions": -3.5402360535503927,
+    "wells": -2.679782312491825,
+    "lowest_row_hole": -13.089990933608046,
+    "win": 1000000.0
+  },
+  "history": [
+    {
+      "generation": 0,
+      "best_cost": 20.583333333333332,
+      "elite_mean_cost": 21.662499999999998,
+      "best_weights": {
+        "holes": -10.491419067013503,
+        "covered": -3.8971104297602843,
+        "height": -0.45680879946858977,
+        "bumpiness": 0.0,
+        "row_transitions": -3.055838869248861,
+        "col_transitions": -2.977625059500379,
+        "wells": 0.0,
+        "lowest_row_hole": -1.908966596670922
+      }
+    },
+    {
+      "generation": 1,
+      "best_cost": 20.666666666666668,
+      "elite_mean_cost": 21.77638888888889,
+      "best_weights": {
+        "holes": -15.45497323906179,
+        "covered": -0.5633657852084485,
+        "height": -0.10326644026334775,
+        "bumpiness": -0.6774016328879362,
+        "row_transitions": -2.1186419013909736,
+        "col_transitions": -0.24674806824069173,
+        "wells": -0.3745111923262948,
+        "lowest_row_hole": -32.187504246382225
+      }
+    },
+    {
+      "generation": 2,
+      "best_cost": 21.183333333333334,
+      "elite_mean_cost": 21.534722222222218,
+      "best_weights": {
+        "holes": -15.916767594558015,
+        "covered": -1.7376721205594525,
+        "height": -0.5069759427440573,
+        "bumpiness": -1.307116235882173,
+        "row_transitions": -2.796006051944148,
+        "col_transitions": -2.262820329912587,
+        "wells": 0.0,
+        "lowest_row_hole": -31.64302409566303
+      }
+    },
+    {
+      "generation": 3,
+      "best_cost": 20.708333333333332,
+      "elite_mean_cost": 21.590277777777775,
+      "best_weights": {
+        "holes": -24.343817393919906,
+        "covered": -3.6267608184324653,
+        "height": -0.06198445568678013,
+        "bumpiness": 0.0,
+        "row_transitions": -4.0,
+        "col_transitions": -2.273691154713106,
+        "wells": -1.0060950595263145,
+        "lowest_row_hole": -9.541197968346317
+      }
+    },
+    {
+      "generation": 4,
+      "best_cost": 20.933333333333334,
+      "elite_mean_cost": 21.14027777777778,
+      "best_weights": {
+        "holes": -4.773038685689454,
+        "covered": -0.4330094685986663,
+        "height": -0.9944876443384405,
+        "bumpiness": -0.336635799811665,
+        "row_transitions": -1.9792859684536177,
+        "col_transitions": -5.126387498588857,
+        "wells": -0.8367128216028095,
+        "lowest_row_hole": -1.0
+      }
+    },
+    {
+      "generation": 5,
+      "best_cost": 21.133333333333333,
+      "elite_mean_cost": 21.384722222222223,
+      "best_weights": {
+        "holes": -10.357322464452718,
+        "covered": -1.5194700135790808,
+        "height": -0.3697036527701329,
+        "bumpiness": -0.5770398579724638,
+        "row_transitions": -1.7630248777237383,
+        "col_transitions": -2.668797999842307,
+        "wells": -1.2240192208418816,
+        "lowest_row_hole": -16.87554279292384
+      }
+    },
+    {
+      "generation": 6,
+      "best_cost": 20.325,
+      "elite_mean_cost": 21.099999999999998,
+      "best_weights": {
+        "holes": -14.042795159327898,
+        "covered": -1.8331179933425883,
+        "height": 0.0,
+        "bumpiness": -0.44097355116651965,
+        "row_transitions": -0.8374849944311575,
+        "col_transitions": -3.5402360535503927,
+        "wells": -2.679782312491825,
+        "lowest_row_hole": -13.089990933608046
+      }
+    },
+    {
+      "generation": 7,
+      "best_cost": 20.741666666666664,
+      "elite_mean_cost": 21.168055555555554,
+      "best_weights": {
+        "holes": -9.63474331541858,
+        "covered": -2.3490777264497766,
+        "height": 0.0,
+        "bumpiness": 0.0,
+        "row_transitions": -3.2275534362122436,
+        "col_transitions": -1.4140076404850477,
+        "wells": -1.0540659133121506,
+        "lowest_row_hole": -14.548696722899479
+      }
+    },
+    {
+      "generation": 8,
+      "best_cost": 20.791666666666668,
+      "elite_mean_cost": 21.280555555555555,
+      "best_weights": {
+        "holes": -12.135478208860837,
+        "covered": -2.23566236935934,
+        "height": -0.6679006539788328,
+        "bumpiness": -0.24181859041145448,
+        "row_transitions": -3.429772652433141,
+        "col_transitions": -3.0155226399213078,
+        "wells": -2.1528790205405914,
+        "lowest_row_hole": -7.819952430989261
+      }
+    },
+    {
+      "generation": 9,
+      "best_cost": 20.724999999999998,
+      "elite_mean_cost": 21.034722222222225,
+      "best_weights": {
+        "holes": -15.799407300772192,
+        "covered": -1.139760158816725,
+        "height": -0.28121274097894056,
+        "bumpiness": -0.4700143478844843,
+        "row_transitions": -2.5546332972458456,
+        "col_transitions": -2.8208501338560033,
+        "wells": -0.9745093523565242,
+        "lowest_row_hole": -9.265721348103705
+      }
+    },
+    {
+      "generation": 10,
+      "best_cost": 20.666666666666668,
+      "elite_mean_cost": 21.145833333333332,
+      "best_weights": {
+        "holes": -11.961430793489338,
+        "covered": -1.8624430177878244,
+        "height": -0.4074145646378557,
+        "bumpiness": -0.4827227137559259,
+        "row_transitions": -2.460960225565125,
+        "col_transitions": -3.6647387561376683,
+        "wells": -1.8033805775555947,
+        "lowest_row_hole": -7.219668398029429
+      }
+    },
+    {
+      "generation": 11,
+      "best_cost": 20.89166666666667,
+      "elite_mean_cost": 21.415277777777778,
+      "best_weights": {
+        "holes": -10.939634749773244,
+        "covered": -1.6319234668627391,
+        "height": -0.46023379470036396,
+        "bumpiness": -0.462361886980147,
+        "row_transitions": -2.372021697237497,
+        "col_transitions": -2.4376681366115065,
+        "wells": -0.5731104775966742,
+        "lowest_row_hole": -5.088094120581609
+      }
+    }
+  ]
+}
