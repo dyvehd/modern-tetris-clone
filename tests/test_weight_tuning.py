@@ -6,6 +6,10 @@ evaluated, no-regression best tracking, bound clamping), determinism, and
 the agent factory. The cost model is the load-bearing piece — a topout
 costing the full cap is what keeps survival a hard constraint during
 tuning.
+
+The fork-pool warning is filtered: the tuner forks worker processes by
+design (copy-on-write; the threads CPython's detection sees are pytest's
+own runner, not ours).
 """
 
 import pytest
@@ -19,6 +23,10 @@ from tetris.ai.tuning import (
     _evaluate_candidate,
     make_agent,
     tune,
+)
+
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:This process.*multi-threaded.*fork.*:DeprecationWarning"
 )
 
 
