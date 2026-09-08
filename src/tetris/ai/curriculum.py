@@ -322,14 +322,29 @@ class BatchedTrainer:
 @dataclass
 class CurriculumConfig:
     """The ladder: which levels, which reference, how many gate episodes,
-    retention (re-gate easier levels), warm-start distillation, and
-    checkpointing.
+    retention (re-gate easier levels), warm-start distillation, DAgger
+    refinement rounds, and checkpointing.
 
     ``distill_episodes``: when > 0, each new level warm-starts with
     supervised distillation from the reference search agent (fresh seeds)
     before REINFORCE begins — measured on this repo, cold-start REINFORCE
     does not clear the level-1 gate at sane budgets, while a distilled
     policy reaches ~4/5 of the teacher's win rate. Set 0 for pure RL.
+
+    ``dagger_rounds``: after REINFORCE, run this many DAgger refinement
+    rounds at the current level — roll the policy (mixture play, beta
+    0.8 -> 0 by the standard decay), label every visited state with the
+    teacher's move, re-distill. Measured at level 2: closes the rare-state
+    topout gap that pure behavioral cloning leaves (2.71 -> 2.51 mean
+    pieces at 99% win). Each round's data is collected in parallel when
+    ``workers`` > 1.
+
+    Seed bands (structurally disjoint by construction):
+
+    - training:    ``train_seed0`` upward
+    - distill:     ``distill_seed0`` upward (per level: +1M per level)
+    - DAgger:      ``dagger_seed0`` upward (per level: +1M per level)
+    - gate:        ``gate_seed0`` upward — never overlaps training data
     """
 
     start_level: int = 1
@@ -341,11 +356,18 @@ class CurriculumConfig:
     gate_use_ci: bool = True
     gate_allow_tie: bool = True  # match-the-baseline passes at optimum levels
     retention: bool = True  # re-gate every easier level on advancement
-    gate_seed0: int = 900_000  # fresh seeds for gates (disjoint from training)
+    gate_seed0: int = 900_000_000  # fresh seeds for gates (disjoint band)
     checkpoint_dir: str = "models/curriculum"
     distill_episodes: int = 0  # teacher episodes per level (0 = off)
     distill_epochs: int = 60
     distill_lr: float = 2e-3
+    dagger_rounds: int = 0  # DAgger refinement rounds per level (0 = off)
+    dagger_episodes: int = 400  # policy episodes per DAgger round
+    dagger_beta0: float = 0.8  # first round's teacher-move probability
+    dagger_beta_decay: float = 0.6  # multiplicative decay per round
+    dagger_epochs: int = 2  # distillation passes per round
+    workers: int = 0  # fork-pool size for parallel collection (0 = all-1)
+    parallel_collect: bool = True  # False: sequential collection (fallback)
 
 
 @dataclass
@@ -384,10 +406,14 @@ class Curriculum:
 
     def train_level(self, agent: PolicyAgent, iterations: int) -> list[IterationStats]:
         """Train at the current level: optional distillation warm-start,
-        then REINFORCE with fresh rollout seeds per iteration."""
+        REINFORCE with fresh rollout seeds per iteration, then optional
+        DAgger refinement rounds (policy-distribution states, teacher
+        labels). A stage checkpoint is saved between stages so a crash
+        never loses a converged level."""
         out: list[IterationStats] = []
         if self.cfg.distill_episodes > 0:
             self._distill_level(agent)
+            self._stage_checkpoint(agent, f"L{self.level}_distilled")
         for it in range(iterations):
             self.trainer.cfg = self.train_cfg.with_seeds(
                 self.train_cfg.seed0 + it * self.train_cfg.episodes * 997
@@ -395,23 +421,81 @@ class Curriculum:
             stats = self.trainer.train_iteration(agent, CheeseEnv(level=self.level))
             stats.iteration = it
             out.append(stats)
+        if out:
+            self._stage_checkpoint(agent, f"L{self.level}_reinforced")
+        if self.cfg.dagger_rounds > 0:
+            self._dagger_level(agent)
+            self._stage_checkpoint(agent, f"L{self.level}_daggered")
         return out
+
+    # stage checkpointing -----------------------------------------------------
+
+    def _stage_checkpoint(self, agent: PolicyAgent, tag: str) -> None:
+        path = Path(self.cfg.checkpoint_dir) / f"cheese_policy_{tag}.json"
+        save_policy(self.net, path)
+
+    # seed bands ---------------------------------------------------------------
+
+    def _distill_seed0(self) -> int:
+        """Fresh teacher seeds for this level: band start + 1M/level."""
+        return 100_000_000 + 1_000_000 * self.level
+
+    def _dagger_seed0(self, round_num: int) -> int:
+        """Fresh policy-rollout seeds for this DAgger round: band start
+        + 1M/level + 10k/round — every round re-rolls fresh boards."""
+        return 200_000_000 + 1_000_000 * self.level + 10_000 * round_num
+
+    # warm-start / refinement ---------------------------------------------------
 
     def _distill_level(self, agent: PolicyAgent) -> None:
         """Warm-start from the reference search on fresh seeds at the
-        current level (the ladder's own teacher)."""
+        current level (the ladder's own teacher). Parallel collection
+        when configured."""
         from .distill import TEACHERS, DistillTrainer, collect_teacher_data
 
         teacher = TEACHERS[self.cfg.reference]()
-        data = collect_teacher_data(
-            teacher, CheeseEnv(level=self.level),
-            self.cfg.distill_episodes, seed0=self.cfg.gate_seed0 + 10_000 * self.level,
-        )
+        if self.cfg.parallel_collect and self.cfg.workers != 1:
+            from .parallel import collect_teacher_data_parallel
+
+            data, _stats = collect_teacher_data_parallel(
+                self.cfg.reference, self.level, self.cfg.distill_episodes,
+                seed0=self._distill_seed0(), workers=self.cfg.workers,
+            )
+        else:
+            data = collect_teacher_data(
+                teacher, CheeseEnv(level=self.level),
+                self.cfg.distill_episodes, seed0=self._distill_seed0(),
+            )
         trainer = DistillTrainer(
             self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device
         )
         for _ in range(self.cfg.distill_epochs):
             trainer.train_batch(data)
+
+    def _dagger_level(self, agent: PolicyAgent) -> None:
+        """DAgger refinement at the current level: roll the current policy
+        (mixture play), label every visited state with the teacher's move,
+        re-distill. Data accumulates across rounds, matching the measured
+        v5 protocol."""
+        from .distill import TEACHERS, DistillTrainer
+        from .parallel import collect_dagger_data_parallel
+
+        trainer = DistillTrainer(
+            self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device
+        )
+        data: list[tuple[np.ndarray, int]] = []
+        beta = self.cfg.dagger_beta0
+        for r in range(self.cfg.dagger_rounds):
+            new_data, _stats = collect_dagger_data_parallel(
+                self.net, self.cfg.reference,
+                self.level, self.cfg.dagger_episodes,
+                seed0=self._dagger_seed0(r), beta=beta,
+                rng_seed=int(self.rng.integers(1 << 31)), workers=self.cfg.workers,
+            )
+            data.extend(new_data)
+            for _ in range(self.cfg.dagger_epochs):
+                trainer.train_batch(data)
+            beta *= self.cfg.dagger_beta_decay
 
     def gate(self, level: int) -> GateResult:
         env = CheeseEnv(level=level)
