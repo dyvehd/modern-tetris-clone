@@ -48,6 +48,8 @@ def main() -> None:
         help="teacher episodes per level for the distillation warm-start (0 = pure RL)",
     )
     ap.add_argument("--distill-epochs", type=int, default=60)
+    ap.add_argument("--distill-chunk", type=int, default=20000,
+                    help="distillation GPU batch size (decisions per chunk)")
     ap.add_argument("--dagger-rounds", type=int, default=0,
                     help="DAgger refinement rounds per level (0 = off)")
     ap.add_argument("--dagger-episodes", type=int, default=400,
@@ -89,6 +91,7 @@ def main() -> None:
         checkpoint_dir="models/curriculum",
         distill_episodes=args.distill_episodes,
         distill_epochs=args.distill_epochs,
+        distill_chunk_decisions=args.distill_chunk,
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_epochs=args.dagger_epochs,

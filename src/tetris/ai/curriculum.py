@@ -361,6 +361,7 @@ class CurriculumConfig:
     distill_episodes: int = 0  # teacher episodes per level (0 = off)
     distill_epochs: int = 60
     distill_lr: float = 2e-3
+    distill_chunk_decisions: int = 20_000  # GPU batch size (2k fit a 4GB laptop; the server has 96)
     dagger_rounds: int = 0  # DAgger refinement rounds per level (0 = off)
     dagger_episodes: int = 400  # policy episodes per DAgger round
     dagger_beta0: float = 0.8  # first round's teacher-move probability
@@ -467,7 +468,8 @@ class Curriculum:
                 self.cfg.distill_episodes, seed0=self._distill_seed0(),
             )
         trainer = DistillTrainer(
-            self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device
+            self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device,
+            chunk_decisions=self.cfg.distill_chunk_decisions,
         )
         for _ in range(self.cfg.distill_epochs):
             trainer.train_batch(data)
@@ -481,7 +483,8 @@ class Curriculum:
         from .parallel import collect_dagger_data_parallel
 
         trainer = DistillTrainer(
-            self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device
+            self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device,
+            chunk_decisions=self.cfg.distill_chunk_decisions,
         )
         data: list[tuple[np.ndarray, int]] = []
         beta = self.cfg.dagger_beta0
