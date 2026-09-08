@@ -309,6 +309,47 @@ env = CheeseEnv(level=10)   # dig 10 lines, Jstris stack/messiness
 print(run_batch(GreedyDigAgent(), env, 1000).summary())
 ```
 
+## AI search baselines
+
+`tetris.ai.search` + `tetris.ai.eval` — the search baselines every learner is
+measured against (Deliverable 2 of the cheese-race plan).
+
+- **Eval** (`eval.py`): linear board eval in the Dellacherie lineage, adapted
+  for downstacking — holes (heavily weighted: they block the shaft), covered
+  cells above holes (depth), aggregate height, bumpiness, row/column
+  transitions, well depth, and empty cells of a *partially*-filled bottom row
+  (the dig target; a fully-dug board is exempt). Weights are hand-set now;
+  rung-1 learning tunes exactly these numbers.
+- **`OnePlyAgent`**: best single placement (active or hold) by eval + line
+  bonus + win bonus.
+- **`BeamAgent`** (`width` × `depth`): beam over the preview queue (depth is
+  capped by what the agent can see), hold as a branch at every ply with the
+  engine's can_hold semantics, win terminals score a big bonus minus a
+  per-piece decay — so among winning plans the *shortest* is preferred.
+- **Quiescence rule** (the key correctness property): a placement that
+  clears nothing is a beam leaf at *every* ply. Under Jstris refill
+  semantics the cheese tops back up after a combo break with RNG hole
+  positions the search cannot know, so no future win may be credited
+  through a no-clear move. This is what let the beam lose the pinned
+  level-1 edge seeds by committing junk on the promise of a next-piece dig
+  that the refill destroyed — fixed, the seeds now solve at the true
+  2-piece minimum.
+
+Measured (Jstris cheese, stack 9, messiness 100%, 100 episodes/level —
+`examples/cheese_baselines.py`):
+
+| level | greedy win% | greedy pieces/line | 1ply | beam20x4 |
+|------:|:-----------:|:------------------:|:----:|:--------:|
+| 1     | 100         | 1.03               | 1.01 | 1.01 |
+| 2     | 100         | 1.39               | 1.20 | **1.16** |
+| 3     | 96          | 3.40               | 1.76 | **1.58** |
+| 5     | 66          | 6.06               | **3.46** | 3.59 |
+| 10    | 40          | 9.60               | 5.12 | **4.86** |
+
+The eval-driven agents never top out (greedy: 40% win at level 10) and
+roughly halve pieces-per-line — the reference numbers for the curriculum
+ladder. Run `examples/cheese_baselines.py` for the live table.
+
 ## Project layout
 
 ```
@@ -326,6 +367,8 @@ src/tetris/
     pathfinder.py  # placement -> shortest Action input sequence
     cheese.py      # cheese-race episode harness (env, obs, agent protocol)
     agents.py      # baselines: random, greedy dig
+    eval.py        # downstack linear eval (Dellacherie-lineage features)
+    search.py      # 1-ply + beam agents (hold-as-branch, quiescence leaves)
   input/           # DAS/ARR controller (no pygame)
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus

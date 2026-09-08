@@ -20,23 +20,29 @@ from .cheese import (
     run_episode,
     stack_height,
 )
+from .eval import EvalWeights, eval_board
 from .movegen import Placement, enumerate_placements, spin_class
 from .pathfinder import find_path
+from .search import BeamAgent, OnePlyAgent
 
 __all__ = [
     "BaseAgent",
     "BatchResult",
+    "BeamAgent",
     "CheeseEnv",
     "Decision",
     "EpisodeResult",
+    "EvalWeights",
     "GreedyDigAgent",
     "InvalidDecision",
     "Obs",
+    "OnePlyAgent",
     "Placement",
     "RandomAgent",
     "apply_placement",
     "count_holes",
     "enumerate_placements",
+    "eval_board",
     "find_path",
     "run_batch",
     "run_episode",
