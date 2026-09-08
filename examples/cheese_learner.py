@@ -48,6 +48,16 @@ def main() -> None:
         help="teacher episodes per level for the distillation warm-start (0 = pure RL)",
     )
     ap.add_argument("--distill-epochs", type=int, default=60)
+    ap.add_argument("--dagger-rounds", type=int, default=0,
+                    help="DAgger refinement rounds per level (0 = off)")
+    ap.add_argument("--dagger-episodes", type=int, default=400,
+                    help="policy episodes per DAgger round")
+    ap.add_argument("--dagger-epochs", type=int, default=2,
+                    help="distillation passes per DAgger round")
+    ap.add_argument("--workers", type=int, default=0,
+                    help="fork-pool size for parallel rollouts (0 = cpu_count-1)")
+    ap.add_argument("--sequential-collect", action="store_true",
+                    help="disable the fork pool (debug fallback)")
     args = ap.parse_args()
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -79,6 +89,11 @@ def main() -> None:
         checkpoint_dir="models/curriculum",
         distill_episodes=args.distill_episodes,
         distill_epochs=args.distill_epochs,
+        dagger_rounds=args.dagger_rounds,
+        dagger_episodes=args.dagger_episodes,
+        dagger_epochs=args.dagger_epochs,
+        workers=args.workers,
+        parallel_collect=not args.sequential_collect,
     )
     cur = Curriculum(cur_cfg, net, train_cfg, rng=np.random.default_rng(args.seed))
 
