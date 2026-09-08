@@ -186,8 +186,18 @@ def test_gate_tie_rule():
     assert check_gate(_gate(1.02, 0.05), _gate(1.00, 0.05)).passed
     # clearly worse than the noise band: blocked
     assert not check_gate(_gate(1.30, 0.05), _gate(1.00, 0.05)).passed
-    # a tie with a WORSE win rate is not mastery: blocked
+    # near-tie mean but win rate far below noise: blocked
+    assert not check_gate(
+        GateStats(1.02, 0.02, 0.90, 300), GateStats(1.01, 0.02, 1.0, 300)
+    ).passed
+    # a tie with a clearly WORSE win rate is not mastery: blocked (the
+    # drop 0.5 far exceeds the pooled noise ~0.086 at n=200)
     assert not check_gate(GateStats(1.0, 0.0, 0.5, 200), GateStats(1.0, 0.0, 1.0, 200)).passed
+    # a sampled 99% vs 100% at n=300 is noise (pooled se ~0.011, band ~0.02):
+    # the tie must not demand exact win-rate equality
+    assert check_gate(
+        GateStats(1.01, 0.01, 0.99, 300), GateStats(1.01, 0.01, 1.0, 300)
+    ).passed
     # strict improvement beats tie in the reported rule
     r = check_gate(_gate(4.5, 0.3), _gate(5.0, 0.1))
     assert r.passed and "strict" in r.rule

@@ -141,6 +141,16 @@ def baseline_stats(reference: str, env: CheeseEnv, n: int, seed0: int) -> GateSt
     return _pieces_stats(results)
 
 
+def _pooled_win_se(a: GateStats, b: GateStats) -> float:
+    """Pooled two-proportion standard error of (a.win_rate - b.win_rate)
+    — the noise band of a win-rate difference at these episode counts."""
+    n = a.episodes + b.episodes
+    if a.episodes == 0 or b.episodes == 0:
+        return 0.0
+    pooled = (a.win_rate * a.episodes + b.win_rate * b.episodes) / n
+    return float(np.sqrt(pooled * (1 - pooled) * (1 / a.episodes + 1 / b.episodes)))
+
+
 def check_gate(
     learner: GateStats,
     baseline: GateStats,
@@ -155,11 +165,15 @@ def check_gate(
 
     - **strict** (``use_ci``): learner mean + 95% CI sits strictly below
       the baseline mean — a statistically separated improvement; or
-    - **tie** (``allow_tie``): the learner matches the baseline within the
-      combined noise of both batches AND its win rate is not lower.
-      Necessary at levels where the baseline already plays the theoretical
-      optimum (level 1: mean 1.00) — strict improvement is impossible
-      there, and matching the optimum consistently IS mastery.
+    - **tie** (``allow_tie``): the learner matches the baseline within
+      the combined noise of both batches AND its win rate is not
+      statistically worse (two-proportion test). Necessary at levels
+      where the baseline already plays the theoretical optimum (level
+      1: mean 1.00) — strict improvement is impossible there, and
+      matching the optimum within measurement noise IS mastery. A
+      sampled 99% vs 100% over 300 episodes is a ~p=0.25 difference:
+      demanding exact equality would demand perfection on noise (the
+      same error the CI bands already correct for on the mean).
 
     Otherwise (``use_ci=False``): learner mean <= baseline mean - margin.
     A learner that clears nothing never passes; a reference that clears
@@ -183,11 +197,11 @@ def check_gate(
                 + ((b_ci / 1.96) ** 2 if baseline.episodes > 1 else 0.0)
             )
         ) if (l_ci or b_ci) else 0.0
-        tie = (
-            allow_tie
-            and diff <= noise
-            and learner.win_rate >= baseline.win_rate
+        win_ok = (
+            learner.win_rate - baseline.win_rate
+            >= -1.96 * _pooled_win_se(learner, baseline)
         )
+        tie = allow_tie and diff <= noise and win_ok
         if strict:
             rule = "strict: mean+CI<baseline"
             return GateResult(True, learner, baseline, rule)
@@ -581,11 +595,25 @@ class Curriculum:
                 m = f"{s.mean_pieces:.2f}" if s.mean_pieces is not None else "—"
                 return f"{s.win_rate:.0%}/{m}"
 
-            regressed = (
-                after.win_rate < before.win_rate
-                or (after.mean_pieces is not None and before.mean_pieces is not None
-                    and after.mean_pieces > before.mean_pieces)
+            # regression must exceed noise: win-rate drop beyond the pooled
+            # two-proportion band, or a mean-pieces increase beyond the
+            # combined CI — a 99%->97% wobble at n=100 must not veto a
+            # beneficial DAgger round
+            win_drop = before.win_rate - after.win_rate
+            win_noise = 1.96 * _pooled_win_se(before, after)
+            mean_reg = (
+                after.mean_pieces is not None and before.mean_pieces is not None
+                and (
+                    after.mean_pieces - before.mean_pieces
+                    > 1.96 * float(
+                        np.sqrt(
+                            ((after.ci95 or 0.0) / 1.96) ** 2
+                            + ((before.ci95 or 0.0) / 1.96) ** 2
+                        )
+                    )
+                )
             )
+            regressed = win_drop > win_noise or mean_reg
             if regressed:
                 self.net.load_state_dict(pre)
                 print(
