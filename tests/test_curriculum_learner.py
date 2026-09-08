@@ -155,9 +155,16 @@ def _gate(mean, ci, win_rate=1.0, episodes=200):
 
 def test_gate_rules():
     base = _gate(5.0, 0.1)
-    # CI rule: learner mean + CI must be below baseline mean
+    # strict CI rule: learner mean + CI must be below baseline mean — this
+    # pair is strictly separated
     assert check_gate(_gate(4.5, 0.3), base, use_ci=True).passed  # 4.8 < 5.0
-    assert not check_gate(_gate(4.5, 0.6), base, use_ci=True).passed  # 5.1 >= 5.0
+    # 4.5±0.6 vs 5.0±0.1: NOT strict (5.1 >= 5.0), but the diff (−0.5) is
+    # within the combined noise (±0.61) — a statistical tie, passes as one
+    g = check_gate(_gate(4.5, 0.6), base, use_ci=True)
+    assert g.passed and "tie" in g.rule
+    # clearly worse than the baseline beyond all noise: blocked either way
+    assert not check_gate(_gate(5.5, 0.1), base, use_ci=True).passed
+    assert not check_gate(_gate(5.5, 0.1), base, use_ci=True, allow_tie=False).passed
     # absolute rule with margin
     assert check_gate(_gate(4.0, 99.0), base, margin=0.5, use_ci=False).passed
     assert not check_gate(_gate(4.7, 0.0), base, margin=0.5, use_ci=False).passed
@@ -165,6 +172,27 @@ def test_gate_rules():
     assert not check_gate(GateStats(None, None, 0.0, 200), base).passed
     # a baseline that clears nothing never blocks
     assert check_gate(_gate(999.0, 0.0), GateStats(None, None, 0.0, 200)).passed
+
+
+def test_gate_tie_rule():
+    # at optimum levels the baseline cannot be beaten — matching it within
+    # combined noise (with no worse win rate) passes; being clearly worse
+    # (beyond the noise band) does not
+    optimal = _gate(1.00, 0.0)  # the level-1 optimum: 1 piece every game
+    learner_tie = _gate(1.00, 0.0)
+    assert check_gate(learner_tie, optimal).passed
+    assert "tie" in check_gate(learner_tie, optimal).rule
+    # a small diff within combined noise also ties
+    assert check_gate(_gate(1.02, 0.05), _gate(1.00, 0.05)).passed
+    # clearly worse than the noise band: blocked
+    assert not check_gate(_gate(1.30, 0.05), _gate(1.00, 0.05)).passed
+    # a tie with a WORSE win rate is not mastery: blocked
+    assert not check_gate(GateStats(1.0, 0.0, 0.5, 200), GateStats(1.0, 0.0, 1.0, 200)).passed
+    # strict improvement beats tie in the reported rule
+    r = check_gate(_gate(4.5, 0.3), _gate(5.0, 0.1))
+    assert r.passed and "strict" in r.rule
+    # tie disabled: pure strict mode
+    assert not check_gate(learner_tie, optimal, allow_tie=False).passed
 
 
 def test_gate_stats_match_batch_math():

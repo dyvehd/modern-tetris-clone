@@ -147,24 +147,58 @@ def check_gate(
     *,
     margin: float = 0.0,
     use_ci: bool = True,
+    allow_tie: bool = True,
 ) -> GateResult:
     """The curriculum gate.
 
-    ``use_ci`` (default): learner mean + 95% CI must sit strictly below the
-    baseline mean — the improvement is statistically separated. Otherwise:
-    learner mean <= baseline mean - ``margin``. A learner that clears
-    nothing never passes; a reference that clears nothing never blocks.
+    Passes when EITHER:
+
+    - **strict** (``use_ci``): learner mean + 95% CI sits strictly below
+      the baseline mean — a statistically separated improvement; or
+    - **tie** (``allow_tie``): the learner matches the baseline within the
+      combined noise of both batches AND its win rate is not lower.
+      Necessary at levels where the baseline already plays the theoretical
+      optimum (level 1: mean 1.00) — strict improvement is impossible
+      there, and matching the optimum consistently IS mastery.
+
+    Otherwise (``use_ci=False``): learner mean <= baseline mean - margin.
+    A learner that clears nothing never passes; a reference that clears
+    nothing never blocks.
     """
-    rule = "mean+CI<baseline" if use_ci else f"mean<=baseline-{margin:g}"
     if learner.mean_pieces is None or learner.win_rate == 0.0:
+        rule = "cleared nothing"
         return GateResult(False, learner, baseline, rule)
     if baseline.mean_pieces is None:
+        rule = "baseline cleared nothing"
         return GateResult(True, learner, baseline, rule)
+
     if use_ci:
-        ci = learner.ci95 or 0.0
-        passed = learner.mean_pieces + ci < baseline.mean_pieces
-    else:
-        passed = learner.mean_pieces <= baseline.mean_pieces - margin
+        l_ci = learner.ci95 or 0.0
+        b_ci = baseline.ci95 or 0.0
+        strict = learner.mean_pieces + l_ci < baseline.mean_pieces
+        diff = learner.mean_pieces - baseline.mean_pieces
+        noise = 1.96 * float(
+            np.sqrt(
+                ((l_ci / 1.96) ** 2 if learner.episodes > 1 else 0.0)
+                + ((b_ci / 1.96) ** 2 if baseline.episodes > 1 else 0.0)
+            )
+        ) if (l_ci or b_ci) else 0.0
+        tie = (
+            allow_tie
+            and diff <= noise
+            and learner.win_rate >= baseline.win_rate
+        )
+        if strict:
+            rule = "strict: mean+CI<baseline"
+            return GateResult(True, learner, baseline, rule)
+        if tie:
+            rule = "tie: matched the baseline within noise"
+            return GateResult(True, learner, baseline, rule)
+        rule = "mean+CI<baseline (or tie)"
+        return GateResult(False, learner, baseline, rule)
+
+    rule = f"mean<=baseline-{margin:g}"
+    passed = learner.mean_pieces <= baseline.mean_pieces - margin
     return GateResult(bool(passed), learner, baseline, rule)
 
 
@@ -305,6 +339,7 @@ class CurriculumConfig:
     gate_episodes: int = 200
     gate_margin: float = 0.0
     gate_use_ci: bool = True
+    gate_allow_tie: bool = True  # match-the-baseline passes at optimum levels
     retention: bool = True  # re-gate every easier level on advancement
     gate_seed0: int = 900_000  # fresh seeds for gates (disjoint from training)
     checkpoint_dir: str = "models/curriculum"
@@ -389,6 +424,7 @@ class Curriculum:
         return check_gate(
             learner, baseline,
             margin=self.cfg.gate_margin, use_ci=self.cfg.gate_use_ci,
+            allow_tie=self.cfg.gate_allow_tie,
         )
 
     def run(self, agent: PolicyAgent, iterations_per_level: int = 40, verbose: bool = True):
