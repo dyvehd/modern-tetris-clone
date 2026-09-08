@@ -270,6 +270,45 @@ for action in path:                         # then drive the real game
 interface) remains for simple agents; `tetris.ai` supersedes it with spin
 classification and spin-in reachability.
 
+## AI cheese-race harness
+
+`tetris.ai.cheese` wraps the engine into the episode protocol the AI stack is
+built and measured on — **the position-prediction / navigation decoupling
+made literal**: an agent predicts *placements* (where the current — or held —
+piece should lock); the harness navigates (movegen + pathfinder → inputs).
+
+- `CheeseEnv` — episode parameters: level (cheese lines to dig), stack height
+  (Jstris keeps 9), messiness, refill semantics (Jstris vs TETR.IO), hold,
+  previews, piece cap. 0G + infinite SDF: pieces-per-dug-line is the only
+  measured skill.
+- `run_episode(agent, env, seed)` — one seeded episode. Two application
+  modes: `navigate=True` converts each placement to its shortest input
+  sequence and replays it through the real engine (full fidelity, per-piece
+  input log); `navigate=False` teleports + hard-drops (2 ticks/piece — same
+  cheese outcomes, the fast path for big batches). Illegal agent decisions
+  raise `InvalidDecision`; a piece cap turns unfinished episodes into
+  `capped` results, never hangs.
+- `run_batch(...)` → `BatchResult` — ≥1,000-episode batches with win rate,
+  mean pieces-to-clear over wins, 95% CI, pieces/line, failure breakdown.
+- `Obs` — the frozen snapshot an agent sees (rows, active, hold, previews,
+  cheese counters); `Decision(placement, hold)` — what it answers.
+
+Baseline agents (`tetris.ai.agents`): `RandomAgent` (floor) and
+`GreedyDigAgent` (greedy line clears, hold when strictly better). At level 1
+the greedy agent is optimal wherever 1 piece can win (99% of seeds); the
+remaining ~1% — hole 0 with S/O only, hole 9 with Z/O only — genuinely need
+2+ pieces (a vertical S's pointy bottom cell sits on its *left* column, so
+column 0 is out of reach; Z mirrors this at column 9; O never digs alone).
+The pinned edge-seed tests document greedy's 1-ply myopia cost there: the
+headroom for search (Deliverable 2).
+
+```python
+from tetris.ai import CheeseEnv, GreedyDigAgent, run_batch
+
+env = CheeseEnv(level=10)   # dig 10 lines, Jstris stack/messiness
+print(run_batch(GreedyDigAgent(), env, 1000).summary())
+```
+
 ## Project layout
 
 ```
@@ -285,11 +324,13 @@ src/tetris/
   ai/              # bot mobility core (0G planning model)
     movegen.py     # exhaustive reachable-placement BFS + spin classes
     pathfinder.py  # placement -> shortest Action input sequence
+    cheese.py      # cheese-race episode harness (env, obs, agent protocol)
+    agents.py      # baselines: random, greedy dig
   input/           # DAS/ARR controller (no pygame)
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus
   config.py        # defaults + settings.toml override
-tests/             # 210 tests pinning all of the above
+tests/             # 232 tests pinning all of the above
 ```
 
 ## Verification checklist (for pro-player review)
