@@ -368,6 +368,9 @@ class CurriculumConfig:
     dagger_beta0: float = 0.8  # first round's teacher-move probability
     dagger_beta_decay: float = 0.6  # multiplicative decay per round
     dagger_epochs: int = 2  # distillation passes per round
+    dagger_lr: float = 5e-4  # fine-tune lr (NOT distill_lr — see _dagger_level)
+    dagger_replay_decisions: int = 50_000  # teacher-data replay sample (0 = off)
+    dagger_probe_episodes: int = 100  # no-regression probe after DAgger (0 = off)
     workers: int = 0  # fork-pool size for parallel collection (0 = all-1)
     parallel_collect: bool = True  # False: sequential collection (fallback)
 
@@ -444,7 +447,9 @@ class Curriculum:
 
     def _dagger_seed0(self, round_num: int) -> int:
         """Fresh policy-rollout seeds for this DAgger round: band start
-        + 1M/level + 10k/round — every round re-rolls fresh boards."""
+        + 1M/level + 10k/round — every round re-rolls fresh boards.
+        Round numbers 0..dagger_rounds-1 are collection rounds; 50+ is
+        reserved for the replay sample."""
         return 200_000_000 + 1_000_000 * self.level + 10_000 * round_num
 
     # warm-start / refinement ---------------------------------------------------
@@ -502,15 +507,50 @@ class Curriculum:
                 )
 
     def _dagger_level(self, agent: PolicyAgent) -> None:
-        """DAgger refinement at the current level: roll the current policy
-        (mixture play), label every visited state with the teacher's move,
-        re-distill. Data accumulates across rounds, matching the measured
-        v5 protocol."""
-        from .distill import TEACHERS, DistillTrainer
+        """DAgger refinement at the current level — with the three
+        safeguards the first server run measured as necessary:
+
+        Measured failure (run 3): after a good distill (99% gate win)
+        and an improving REINFORCE (97.5%, 1.036 mean), three DAgger
+        rounds left the net at 84.5% / 2.136 — WORSE than before. At
+        level 1 a missed hole spirals into a 30-40 piece failure, so
+        policy-rollout data is dominated ~8:1 by junk-board states;
+        training 6 epochs at the distill lr on that junk-distribution
+        catastrophically forgets the clean-board behavior.
+
+        Safeguards:
+        - ``dagger_replay_decisions``: every training pass mixes a
+          sample of the level's own teacher data with the DAgger data —
+          the clean-board behavior is rehearsed, not displaced.
+        - ``dagger_lr``: a fine-tune lr (default 5e-4, 1/4 of distill)
+          with a fresh Adam, so the DAgger signal can only nudge.
+        - ``dagger_probe_episodes``: after the rounds, a greedy probe
+          on gate-band seeds; if win rate or mean pieces regressed, the
+          pre-DAgger weights are restored and DAgger is skipped for
+          this level. No-regression, enforced.
+        """
+        from .distill import DistillTrainer, collect_teacher_data
         from .parallel import collect_dagger_data_parallel
 
+        # snapshot before any DAgger touch (deep state_dict copy)
+        pre = {
+            k: v.detach().clone() for k, v in self.net.state_dict().items()
+        }
+        probe_n = self.cfg.dagger_probe_episodes
+        before = self._probe(probe_n) if probe_n else None
+
+        # teacher replay data: a fresh sample at this level (round 50 of
+        # the seed band — reserved, never a collection round)
+        replay = None
+        if self.cfg.dagger_replay_decisions > 0:
+            replay = collect_teacher_data(
+                self._teacher_agent(), CheeseEnv(level=self.level),
+                self.cfg.dagger_replay_decisions // 3,  # ~3 dec/episode
+                seed0=self._dagger_seed0(50),
+            )
+
         trainer = DistillTrainer(
-            self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device,
+            self.net, lr=self.cfg.dagger_lr, device=self.train_cfg.device,
             chunk_decisions=self.cfg.distill_chunk_decisions,
         )
         data: list[tuple[np.ndarray, int]] = []
@@ -524,8 +564,54 @@ class Curriculum:
             )
             data.extend(new_data)
             for _ in range(self.cfg.dagger_epochs):
-                trainer.train_batch(data)
+                batch = data if replay is None else replay + data
+                stats = trainer.train_batch(batch)
+                print(
+                    f"  dagger L{self.level} r{r} (beta {beta:.2f}):"
+                    f" {len(data)} policy decisions"
+                    f" | loss {stats.loss:.3f} | acc {stats.accuracy:.1%}",
+                    flush=True,
+                )
             beta *= self.cfg.dagger_beta_decay
+
+        if probe_n and before is not None:
+            after = self._probe(probe_n)
+
+            def _fmt(s: GateStats) -> str:
+                m = f"{s.mean_pieces:.2f}" if s.mean_pieces is not None else "—"
+                return f"{s.win_rate:.0%}/{m}"
+
+            regressed = (
+                after.win_rate < before.win_rate
+                or (after.mean_pieces is not None and before.mean_pieces is not None
+                    and after.mean_pieces > before.mean_pieces)
+            )
+            if regressed:
+                self.net.load_state_dict(pre)
+                print(
+                    f"  dagger L{self.level}: probe regressed"
+                    f" ({_fmt(before)} -> {_fmt(after)})"
+                    f" — pre-DAgger weights restored",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"  dagger L{self.level}: probe ok"
+                    f" ({_fmt(before)} -> {_fmt(after)})",
+                    flush=True,
+                )
+
+    def _probe(self, n: int) -> GateStats:
+        """Quick greedy evaluation on gate-band seeds (the no-regression
+        probe; uses the same seed band as the real gate)."""
+        return gate_stats(
+            self.net, CheeseEnv(level=self.level), n, self.cfg.gate_seed0
+        )
+
+    def _teacher_agent(self):
+        from .distill import TEACHERS
+
+        return TEACHERS[self.cfg.reference]()
 
     def gate(self, level: int) -> GateResult:
         env = CheeseEnv(level=level)

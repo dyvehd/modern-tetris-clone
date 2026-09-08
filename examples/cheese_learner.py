@@ -58,6 +58,12 @@ def main() -> None:
                     help="policy episodes per DAgger round")
     ap.add_argument("--dagger-epochs", type=int, default=2,
                     help="distillation passes per DAgger round")
+    ap.add_argument("--dagger-lr", type=float, default=5e-4,
+                    help="DAgger fine-tune lr (1/4 of distill — no forgetting)")
+    ap.add_argument("--dagger-replay", type=int, default=50000,
+                    help="teacher-decision replay mixed into DAgger training")
+    ap.add_argument("--dagger-probe", type=int, default=100,
+                    help="no-regression probe episodes after DAgger (0 = off)")
     ap.add_argument("--workers", type=int, default=0,
                     help="fork-pool size for parallel rollouts (0 = cpu_count-1)")
     ap.add_argument("--sequential-collect", action="store_true",
@@ -98,6 +104,9 @@ def main() -> None:
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_epochs=args.dagger_epochs,
+        dagger_lr=args.dagger_lr,
+        dagger_replay_decisions=args.dagger_replay,
+        dagger_probe_episodes=args.dagger_probe,
         workers=args.workers,
         parallel_collect=not args.sequential_collect,
     )
