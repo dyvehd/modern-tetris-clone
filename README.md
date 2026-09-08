@@ -28,7 +28,7 @@ against `tetris.engine.env.TetrisEnv` — see [AI environment](#ai-environment).
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[game,dev]"   # or: uv pip install ...
 .venv/bin/python -m tetris          # menu → pick a mode → Enter
-.venv/bin/pytest                    # 175 correctness tests
+.venv/bin/pytest                    # 210 correctness tests
 ```
 
 Modes: **Marathon** (Guideline curve gravity, 150 lines), **Sprint 40 Lines**
@@ -229,6 +229,46 @@ print(obs.score, obs.lines, obs.attack_sent)
 - `info["events"]` carries per-tick clear/tspin/garbage events for reward
   shaping.
 
+## AI layer (movement engine)
+
+`tetris.ai` is the bot's mobility core, built for a 0G planning model —
+following the architecture shared by MisaMino, Cold Clear, Zetris and
+cobra-movegen (see `tmp/` reference clones): **placement enumeration**
+decoupled from **target-to-inputs navigation**.
+
+- `enumerate_placements(rows, piece)` — exhaustive BFS over movement states
+  from spawn (shifts, SRS rotations with kicks, optional 180, sonic drops)
+  → every reachable resting placement, each with its engine-accurate spin
+  verdict (`none` / `mini` / `full`, Jstris rules). Spin-in T-spin slots
+  (TSD/TST) are found with their classification — a drop-column
+  enumeration can never see them.
+- `find_path(rows, piece, placement)` → shortest `Action` input sequence
+  (ending `HARD_DROP`) that steers the piece from spawn into the target;
+  replaying it through `Game.tick` locks exactly the predicted cells with
+  the predicted spin (asserted as a test oracle over every placement).
+- Movement model: **infinite soft drop only** (sonic drop) — competitive
+  standard; placements that require stopping mid-fall are deliberately
+  unreachable, and every real spin entry survives the cut (pre-rotation
+  rest → kick → hard drop). A T-spin always ends rotation → hard drop.
+- No finite-SDF timing, no lock-delay move budgets, no gravity clocks:
+  0G reachability. Timing filters for real-time modes come later, on top.
+- Performance (CPython): ~2 ms per (board, piece) enumeration, ~0.5 ms per
+  path — the numbers that size a future beam search.
+
+```python
+from tetris.ai import enumerate_placements, find_path
+
+placements = enumerate_placements(game.rows, game.active.type)
+best = ...                                  # the future search layer picks
+path = find_path(game.rows, game.active.type, best)
+for action in path:                         # then drive the real game
+    game.tick([action])
+```
+
+`tetris.engine.env.reachable_placements()` (the older hard-drop-only
+interface) remains for simple agents; `tetris.ai` supersedes it with spin
+classification and spin-in reachability.
+
 ## Project layout
 
 ```
@@ -241,11 +281,14 @@ src/tetris/
     game.py        # state machine: rotation, lock delay, gravity, hold,
                    # T-spin detection, garbage, spawns/top-out
     env.py         # TetrisEnv + placement search
+  ai/              # bot mobility core (0G planning model)
+    movegen.py     # exhaustive reachable-placement BFS + spin classes
+    pathfinder.py  # placement -> shortest Action input sequence
   input/           # DAS/ARR controller (no pygame)
   render/          # pygame-ce renderer
   app.py           # 60 Hz fixed-timestep game loop, menus
   config.py        # defaults + settings.toml override
-tests/             # 175 tests pinning all of the above
+tests/             # 210 tests pinning all of the above
 ```
 
 ## Verification checklist (for pro-player review)
