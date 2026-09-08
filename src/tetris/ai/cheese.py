@@ -382,3 +382,14 @@ def stack_height(rows: list[int]) -> int:
         if row:
             return FIELD_H - i
     return 0
+
+
+def candidate_moves(obs: Obs) -> list[tuple[Placement, bool]]:
+    """Every legal decision at an observation: each reachable placement of
+    the active piece, plus each reachable placement of the piece a hold
+    would bring out (when hold is usable). Shared by the search agents and
+    the policy learner — one definition of the action space."""
+    out = [(p, False) for p in obs.placements()]
+    if obs.can_hold and obs.hold_piece is not None:
+        out += [(p, True) for p in obs.hold_placements()]
+    return out

@@ -382,6 +382,60 @@ best, history = tune(TuningConfig(
 ))
 ```
 
+## AI curriculum learner (Deliverable 4, GPU-first)
+
+`tetris.ai.policy` + `tetris.ai.curriculum` — the learned placement policy,
+torch-native from day one: the same code trains on the local RTX 3050 and,
+unchanged (`--device cuda`), on the RTX Pro 6000 server.
+
+- **Architecture**: *score-per-candidate* MLP (the fusion bot's policy
+  shape): the state (downscaled board, column heights, piece one-hots,
+  cheese counters) is paired with each candidate placement (4x4 pattern,
+  position, rotation, hold flag) and scored; softmax over candidates picks
+  the decision. Porting to a bigger net or PPO replaces one module.
+- **Training**: REINFORCE with moving-average baseline and entropy bonus.
+  Rollouts run on CPU through the harness (engine-bound regardless of
+  device); every decision of every episode in an iteration is concatenated
+  into **one batched forward/backward on the GPU** — the per-decision
+  softmax is segmented by candidate group (`scatter_reduce` logsumexp),
+  one Adam step per iteration. Reward: −1 per piece + potential-based
+  shaping (alpha per cheese line dug — telescope-sums away, so the optimal
+  policy is unchanged) + terminal win bonus.
+- **Curriculum gates** (the user's rule, made statistical): advance on
+  **strict** improvement — learner mean + 95% CI below the reference mean
+  over a fresh gate batch — or on a **tie**: matching the baseline within
+  the batches' combined noise with no worse win rate (necessary at levels
+  where the reference plays the theoretical optimum, like level 1's mean
+  1.00; measured: a perfect learner was blocked forever by the strict rule
+  alone). With retention on, every easier level is re-gated on advancement;
+  a level that blocks twice stops the ladder.
+- **Search-oracle distillation** (the fusion-bot recipe, now the
+  curriculum's warm-start): measured on this repo, cold-start REINFORCE
+  cannot clear even the level-1 gate at sane budgets — sampled win rate
+  climbs (~30%) but the argmax stays near-random (~3%), each (piece x
+  hole-column) state seeing ~one winning example per iteration. Distilling
+  the beam search's decisions as candidate-index labels on the policy's
+  own encodings fixes it: 62k decisions x 300 epochs (chunked GPU batches
+  — a full batch OOMs a 4 GB 3050) reaches 96% teacher-decision accuracy
+  and plays level 1 at the 1.00-piece optimum, level 2 at 100% wins /
+  2.44 pieces, level 3 at ~96% wins. RL then fine-tunes from there.
+- Checkpoints per passed level: `models/curriculum/cheese_policy_L{N}.json`.
+
+```bash
+.venv/py.sh examples/cheese_learner.py --max-level 10 --distill-episodes 4000
+```
+
+- **DAgger hard-state mining** (`tetris.ai.dagger`): behavioral cloning
+  leaves a compounding-error gap — the policy's rare missteps land on board
+  states the teacher never visited, and ~1% of level-2 episodes top out
+  that the beam wins easily (measured: 99% win but 2.71 mean pieces vs the
+  beam's 2.18). DAgger closes the distribution shift: roll the *current*
+  policy, label every visited state with the *teacher's* move (mixture
+  play, beta decaying 0.8→0), re-distill. Measured on the RTX 3050:
+  7 rounds × 400 episodes → 2.51 mean pieces at the same 99% win rate.
+  The remaining gap to the beam is scale (rounds, episodes, net size) —
+  the RTX Pro 6000 workload.
+
 ## Project layout
 
 ```
