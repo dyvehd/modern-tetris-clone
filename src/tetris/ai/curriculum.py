@@ -554,14 +554,23 @@ class Curriculum:
         before = self._probe(probe_n) if probe_n else None
 
         # teacher replay data: a fresh sample at this level (round 50 of
-        # the seed band — reserved, never a collection round)
+        # the seed band — reserved, never a collection round). Parallel
+        # collection: this is 10k+ teacher episodes at higher levels.
         replay = None
         if self.cfg.dagger_replay_decisions > 0:
-            replay = collect_teacher_data(
-                self._teacher_agent(), CheeseEnv(level=self.level),
-                self.cfg.dagger_replay_decisions // 3,  # ~3 dec/episode
-                seed0=self._dagger_seed0(50),
-            )
+            n_replay_eps = self.cfg.dagger_replay_decisions // 3  # ~3 dec/ep
+            if self.cfg.parallel_collect and self.cfg.workers != 1:
+                from .parallel import collect_teacher_data_parallel
+
+                replay, _rs = collect_teacher_data_parallel(
+                    self.cfg.reference, self.level, n_replay_eps,
+                    seed0=self._dagger_seed0(50), workers=self.cfg.workers,
+                )
+            else:
+                replay = collect_teacher_data(
+                    self._teacher_agent(), CheeseEnv(level=self.level),
+                    n_replay_eps, seed0=self._dagger_seed0(50),
+                )
 
         trainer = DistillTrainer(
             self.net, lr=self.cfg.dagger_lr, device=self.train_cfg.device,
