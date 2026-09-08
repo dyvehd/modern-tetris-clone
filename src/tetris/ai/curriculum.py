@@ -362,6 +362,7 @@ class CurriculumConfig:
     distill_epochs: int = 60
     distill_lr: float = 2e-3
     distill_chunk_decisions: int = 20_000  # GPU batch size (2k fit a 4GB laptop; the server has 96)
+    distill_level_window: int = 3  # mix teacher data from level-1 .. level+window-1
     dagger_rounds: int = 0  # DAgger refinement rounds per level (0 = off)
     dagger_episodes: int = 400  # policy episodes per DAgger round
     dagger_beta0: float = 0.8  # first round's teacher-move probability
@@ -449,30 +450,56 @@ class Curriculum:
     # warm-start / refinement ---------------------------------------------------
 
     def _distill_level(self, agent: PolicyAgent) -> None:
-        """Warm-start from the reference search on fresh seeds at the
-        current level (the ladder's own teacher). Parallel collection
-        when configured."""
+        """Warm-start from the reference search on fresh seeds — the
+        v5-measured recipe: MIXED levels, not just the current one.
+
+        Why mixed: level-1 episodes are a single decision each, so an
+        L1-only dataset is structurally starved (8k episodes = 8k
+        decisions for a 202k-param net — measured: the gate saw 80% win
+        and topouts, while v5's 62k mixed-level decisions on a 4x
+        smaller net hit the L1 optimum). States from harder levels teach
+        the same dig skill with 2.5-8x more decisions per episode and
+        cover the rare boards a 1-piece episode never visits.
+        ``distill_level_window`` levels participate, sharing the episode
+        budget equally; seeds stay in the level's distill band."""
         from .distill import TEACHERS, DistillTrainer, collect_teacher_data
 
-        teacher = TEACHERS[self.cfg.reference]()
+        window = max(1, self.cfg.distill_level_window)
+        levels = [
+            min(l, self.cfg.max_level) for l in range(self.level, self.level + window)
+        ]
+        levels = sorted(set(levels))
+        per_level = max(1, self.cfg.distill_episodes // len(levels))
+        data: list[tuple[np.ndarray, int]] = []
         if self.cfg.parallel_collect and self.cfg.workers != 1:
             from .parallel import collect_teacher_data_parallel
 
-            data, _stats = collect_teacher_data_parallel(
-                self.cfg.reference, self.level, self.cfg.distill_episodes,
-                seed0=self._distill_seed0(), workers=self.cfg.workers,
-            )
+            for i, lvl in enumerate(levels):
+                part, _stats = collect_teacher_data_parallel(
+                    self.cfg.reference, lvl, per_level,
+                    seed0=self._distill_seed0() + 100_000 * i, workers=self.cfg.workers,
+                )
+                data.extend(part)
         else:
-            data = collect_teacher_data(
-                teacher, CheeseEnv(level=self.level),
-                self.cfg.distill_episodes, seed0=self._distill_seed0(),
-            )
+            for i, lvl in enumerate(levels):
+                part = collect_teacher_data(
+                    TEACHERS[self.cfg.reference](), CheeseEnv(level=lvl),
+                    per_level, seed0=self._distill_seed0() + 100_000 * i,
+                )
+                data.extend(part)
         trainer = DistillTrainer(
             self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device,
             chunk_decisions=self.cfg.distill_chunk_decisions,
         )
-        for _ in range(self.cfg.distill_epochs):
-            trainer.train_batch(data)
+        for epoch in range(self.cfg.distill_epochs):
+            stats = trainer.train_batch(data)
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                print(
+                    f"  distill L{self.level}: epoch {epoch + 1}/{self.cfg.distill_epochs}"
+                    f" | {len(data)} decisions | loss {stats.loss:.3f}"
+                    f" | teacher-move accuracy {stats.accuracy:.1%}",
+                    flush=True,
+                )
 
     def _dagger_level(self, agent: PolicyAgent) -> None:
         """DAgger refinement at the current level: roll the current policy

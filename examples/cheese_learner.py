@@ -50,6 +50,8 @@ def main() -> None:
     ap.add_argument("--distill-epochs", type=int, default=60)
     ap.add_argument("--distill-chunk", type=int, default=20000,
                     help="distillation GPU batch size (decisions per chunk)")
+    ap.add_argument("--distill-window", type=int, default=3,
+                    help="mix teacher data from this many levels (v5 recipe)")
     ap.add_argument("--dagger-rounds", type=int, default=0,
                     help="DAgger refinement rounds per level (0 = off)")
     ap.add_argument("--dagger-episodes", type=int, default=400,
@@ -92,6 +94,7 @@ def main() -> None:
         distill_episodes=args.distill_episodes,
         distill_epochs=args.distill_epochs,
         distill_chunk_decisions=args.distill_chunk,
+        distill_level_window=args.distill_window,
         dagger_rounds=args.dagger_rounds,
         dagger_episodes=args.dagger_episodes,
         dagger_epochs=args.dagger_epochs,
