@@ -109,8 +109,8 @@ class GameConfig:
     cheese_messiness: float = 100.0
     # Refill trigger. Jstris (False): a downstack combo keeps the field
     # reduced — the cheese is only topped back up by a placement that clears
-    # nothing. TETR.IO-style (True): topped back up after every placement,
-    # clears included.
+    # nothing, player junk included. TETR.IO-style (True): topped back up
+    # after every placement, clears included.
     cheese_refill_on_clear: bool = False
 
 
@@ -417,8 +417,10 @@ class Game:
             dug = sum(1 for i in cleared if any(v == -2 for v in self.styles[i]))
             self.cheese_on_board -= dug
             self.cheese_dug += dug
-            # the downstack combo continues only if cheese was actually dug
-            self._cheese_last_clear = dug > 0
+            # Jstris: the downstack combo is any line clear — clearing player
+            # junk keeps it (and the reduced field); only a placement that
+            # clears nothing lets the cheese back in
+            self._cheese_last_clear = n > 0
         if n:
             B.clear_rows(self.rows, cleared)
             # shift the style grid the same way
