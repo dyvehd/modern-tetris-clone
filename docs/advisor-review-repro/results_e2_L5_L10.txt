@@ -1,0 +1,13 @@
+800 episodes in 577s
+
+== level 5 (100 seeds) ==
+orig20x4         win 100.0% | pieces  14.70 ± 1.60 | /line  2.94 | paired Δ vs orig  +0.00 (better 0, worse 0, n=100)
+holdfix          win 100.0% | pieces  13.98 ± 1.69 | /line  2.80 | paired Δ vs orig  -0.72 (better 24, worse 10, n=100)
+expand           win 100.0% | pieces   9.15 ± 0.60 | /line  1.83 | paired Δ vs orig  -5.55 (better 73, worse 11, n=100)
+holdfix+expand   win 100.0% | pieces   8.47 ± 0.55 | /line  1.69 | paired Δ vs orig  -6.23 (better 77, worse 6, n=100)
+
+== level 10 (100 seeds) ==
+orig20x4         win 100.0% | pieces  43.61 ± 3.41 | /line  4.36 | paired Δ vs orig  +0.00 (better 0, worse 0, n=100)
+holdfix          win 100.0% | pieces  39.58 ± 3.17 | /line  3.96 | paired Δ vs orig  -4.03 (better 40, worse 27, n=100)
+expand           win 100.0% | pieces  25.94 ± 1.07 | /line  2.59 | paired Δ vs orig -17.67 (better 85, worse 14, n=100)
+holdfix+expand   win 100.0% | pieces  23.31 ± 0.77 | /line  2.33 | paired Δ vs orig -20.30 (better 91, worse 9, n=100)
