@@ -189,7 +189,14 @@ def check_gate(
     if use_ci:
         l_ci = learner.ci95 or 0.0
         b_ci = baseline.ci95 or 0.0
-        strict = learner.mean_pieces + l_ci < baseline.mean_pieces
+        # the win-rate check applies to BOTH branches (review 1: the old
+        # strict branch passed a 1%-win learner on mean alone — a mean over
+        # 3 lucky episodes is not mastery)
+        win_ok = (
+            learner.win_rate - baseline.win_rate
+            >= -1.96 * _pooled_win_se(learner, baseline)
+        )
+        strict = win_ok and learner.mean_pieces + l_ci < baseline.mean_pieces
         diff = learner.mean_pieces - baseline.mean_pieces
         noise = 1.96 * float(
             np.sqrt(
@@ -197,10 +204,6 @@ def check_gate(
                 + ((b_ci / 1.96) ** 2 if baseline.episodes > 1 else 0.0)
             )
         ) if (l_ci or b_ci) else 0.0
-        win_ok = (
-            learner.win_rate - baseline.win_rate
-            >= -1.96 * _pooled_win_se(learner, baseline)
-        )
         tie = allow_tie and diff <= noise and win_ok
         if strict:
             rule = "strict: mean+CI<baseline"
@@ -208,7 +211,7 @@ def check_gate(
         if tie:
             rule = "tie: matched the baseline within noise"
             return GateResult(True, learner, baseline, rule)
-        rule = "mean+CI<baseline (or tie)"
+        rule = "mean+CI<baseline + win-rate ok (or tie)"
         return GateResult(False, learner, baseline, rule)
 
     rule = f"mean<=baseline-{margin:g}"
@@ -322,8 +325,17 @@ class BatchedTrainer:
         logz = max_g + torch.log(sumexp)
         chosen_logp = scores[chosen] - logz[group_t[chosen]]
 
-        ent_t = torch.as_tensor(entropies, dtype=torch.float32, device=device)
-        loss = -(adv * chosen_logp).mean() - cfg.entropy_coef * ent_t.mean()
+        # entropy bonus computed ON GRAPH from the same forward (review 1:
+        # the rollout-side entropy was detached floats — entropy_coef had
+        # zero gradient since the first run). The net is unchanged between
+        # rollout and update, so this is the sampling distribution itself.
+        p = exp_s / sumexp[group_t]
+        entropy_graph = -(
+            (p * (logz[group_t] - scores)).sum() / torch.as_tensor(
+                np.asarray(sizes), dtype=torch.float32, device=device
+            )[group_t]
+        ).sum()
+        loss = -(adv * chosen_logp).mean() - cfg.entropy_coef * entropy_graph
         self.opt.zero_grad(set_to_none=True)
         loss.backward()
         stats.grad_norm = float(
@@ -510,13 +522,26 @@ class Curriculum:
             self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device,
             chunk_decisions=self.cfg.distill_chunk_decisions,
         )
+        # held-out split: the last 10% of decisions never enter training —
+        # run 6's climbing train accuracy was partly memorization (review
+        # 2's matched A/B: train 91% while held-out fell), so the ladder
+        # logs both from now on
+        n_eval = max(1, len(data) // 10)
+        eval_data, train_data = data[-n_eval:], data[:-n_eval]
+
+        def held_out_acc() -> float:
+            from .distill import _group_accuracy_strict
+
+            return _group_accuracy_strict(self.net, eval_data, self.train_cfg.device)
+
         for epoch in range(self.cfg.distill_epochs):
-            stats = trainer.train_batch(data)
+            stats = trainer.train_batch(train_data)
             if (epoch + 1) % 10 == 0 or epoch == 0:
                 print(
                     f"  distill L{self.level}: epoch {epoch + 1}/{self.cfg.distill_epochs}"
-                    f" | {len(data)} decisions | loss {stats.loss:.3f}"
-                    f" | teacher-move accuracy {stats.accuracy:.1%}",
+                    f" | {len(train_data)} decisions | loss {stats.loss:.3f}"
+                    f" | teacher-move accuracy {stats.accuracy:.1%}"
+                    f" | held-out {held_out_acc():.1%}",
                     flush=True,
                 )
 
@@ -639,10 +664,12 @@ class Curriculum:
                 )
 
     def _probe(self, n: int) -> GateStats:
-        """Quick greedy evaluation on gate-band seeds (the no-regression
-        probe; uses the same seed band as the real gate)."""
+        """Quick greedy evaluation on the PROBE seed band — disjoint from
+        the gate band (review 1: the old probe shared gate_seed0, which
+        is model selection on the validation data the gate itself uses)."""
         return gate_stats(
-            self.net, CheeseEnv(level=self.level), n, self.cfg.gate_seed0
+            self.net, CheeseEnv(level=self.level), n,
+            self.cfg.gate_seed0 + 1_000_000,
         )
 
     def _teacher_agent(self):
@@ -683,12 +710,35 @@ class Curriculum:
             gate = self.gate(self.level)
             report = LevelReport(level=self.level, passed=gate.passed, gate=gate)
             if gate.passed:
+                retention_ok = True
                 if self.cfg.retention:
                     for lower in range(self.cfg.start_level, self.level):
                         rg = self.gate(lower)
                         report.retention[lower] = rg
-                        if not rg.passed and verbose:
-                            print(f"retention regression at level {lower}: {rg.reason}")
+                        if not rg.passed:
+                            retention_ok = False
+                            if verbose:
+                                print(f"retention regression at level {lower}: {rg.reason}")
+                if not retention_ok:
+                    # retention is ENFORCED (review 1, confirmed live in run
+                    # 6: L2 and L3 regressed during L4 training and the
+                    # ladder advanced anyway) — the level does not count
+                    # as passed; it retries (subject to the same
+                    # twice-blocked rule)
+                    report.passed = False
+                    blocked += 1
+                    if verbose:
+                        print(
+                            f"gate PASSED but retention failed — not advancing"
+                            f" (blocked {blocked})"
+                        )
+                    if blocked >= 2:
+                        if verbose:
+                            print("twice blocked — stopping the ladder")
+                        yield report
+                        return
+                    yield report
+                    continue
                 self._checkpoint(agent, self.level)
                 if self.level == self.cfg.max_level:
                     if verbose:

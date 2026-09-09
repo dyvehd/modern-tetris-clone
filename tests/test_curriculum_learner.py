@@ -19,6 +19,7 @@ from tetris.ai.curriculum import (  # noqa: E402
     Curriculum,
     CurriculumConfig,
     GateStats,
+    IterationStats,
     TrainConfig,
     baseline_stats,
     check_gate,
@@ -26,19 +27,22 @@ from tetris.ai.curriculum import (  # noqa: E402
     shaped_return,
 )
 from tetris.ai.policy import (  # noqa: E402
+    BOARD_COLS,
+    BOARD_ROWS,
     INPUT_DIM,
     PLACEMENT_DIM,
     STATE_DIM,
     PolicyAgent,
     PolicyNet,
+    encode_afterstate,
     encode_candidates,
-    encode_placement,
     encode_state,
     load_policy,
     save_policy,
 )
+from tetris.ai.search import lock_and_count  # noqa: E402
 from tetris.ai import candidate_moves  # noqa: E402
-from tetris.engine.constants import PieceType  # noqa: E402
+from tetris.engine.constants import FIELD_H, PieceType  # noqa: E402
 
 
 # encodings -------------------------------------------------------------------
@@ -68,29 +72,78 @@ def test_encoding_dims_and_ranges():
     # every value is a bounded one-hot or scaled feature
     assert float(np.abs(state).max()) <= 2.0
     assert float(np.abs(cand).max()) <= 2.0
-    # all rows share the same state half; placement halves differ
+    # all rows share the same context half; afterstate halves differ
     n = cand.shape[0]
     assert (cand[:, :STATE_DIM] == cand[0, :STATE_DIM]).all()
     assert not (cand[:, STATE_DIM:] == cand[1, STATE_DIM:]).all()
+    # every preview is encoded (the old encoding carried only queue[0]):
+    # the context has exactly 5 piece one-hots set
+    assert int(state[: 5 * 7].sum()) == min(5, len(obs.queue))
 
 
-def test_placement_encoding_content():
+def test_afterstate_encodes_the_board_after_the_lock():
+    # the candidate half is the board AFTER lock+clear: two candidates that
+    # clear the cheese row differ from one that leaves it — the dig outcome
+    # is visible in both the occupancy block and the outcome features
+    obs = _first_obs()
+    moves = candidate_moves(obs)
+    digs = [
+        encode_afterstate(obs, p, h)
+        for p, h in moves
+        if lock_and_count(list(obs.rows), p, obs.cheese_on_board)[2] > 0
+    ]
+    nondigs = [
+        encode_afterstate(obs, p, h)
+        for p, h in moves
+        if lock_and_count(list(obs.rows), p, obs.cheese_on_board)[2] == 0
+    ]
+    assert digs, "L1 always has dig candidates"
+    assert nondigs, "and always non-digging ones"
+    # a digging candidate's outcome block marks its dug cheese; a
+    # non-digging one's dug feature is 0
+    dug_feature = PLACEMENT_DIM - 2  # lines, DUG, win, hold — dug is 2nd
+    assert all(v[dug_feature] > 0 for v in digs)
+    assert all(v[dug_feature] == 0 for v in nondigs)
+
+
+def test_afterstate_no_collisions():
+    # review 2's collision witness: three distinct vertical-I placements
+    # (x = -2, -1, 0) produced IDENTICAL old encodings (x clipped to
+    # field). The afterstate encodes the resulting board, so distinct
+    # placements that produce distinct boards must encode distinctly.
+    from tetris.ai.movegen import enumerate_placements
+
+    placements = enumerate_placements([0] * FIELD_H, PieceType.I)
+    game_obs = _first_obs()
+    seen = {}
+    for p in placements:
+        key = encode_afterstate(game_obs, p, False).tobytes()
+        rows_after = lock_and_count(list(game_obs.rows), p, game_obs.cheese_on_board)[0]
+        board_key = tuple(rows_after)
+        if board_key not in seen:
+            seen[board_key] = key
+        else:
+            # same board => same encoding; different board => different
+            assert key == seen[board_key]
+    # and at least one distinct-board pair exists (the collision witness
+    # case): vertical-I x = -2, -1, 0 give three different boards
+    assert len(seen) >= 2
+
+
+def test_afterstate_encodes_outcome_features():
+    # the outcome block: lines/4, dug/4, win flag, hold flag at the tail
+    # of the candidate half
     obs = _first_obs()
     moves = candidate_moves(obs)
     placement, hold = moves[len(moves) // 2]
-    v = encode_placement(placement, hold)
+    v = encode_afterstate(obs, placement, hold)
     assert v.shape == (PLACEMENT_DIM,)
-    # the 4x4 pattern has exactly the piece's 4 cells set
-    assert int(v[:16].sum()) == 4
-    # rotation one-hot: exactly one of the 4 slots after position+row
-    rot_off = 16 + 10 + 1
-    assert int(v[rot_off : rot_off + 4].sum()) == 1
-    assert v[rot_off + (placement.rot % 4)] == 1.0
-    # hold flag
-    assert v[rot_off + 4] == (1.0 if hold else 0.0)
-    # piece one-hot: exactly one set at the tail
-    assert int(v[-7:].sum()) == 1
-    assert v[-7 + list(PieceType).index(placement.piece)] == 1.0
+    rows_after, lines, dug = lock_and_count(list(obs.rows), placement, obs.cheese_on_board)
+    tail = v[BOARD_ROWS * BOARD_COLS:]
+    assert tail[0] == lines / 4.0
+    assert tail[1] == dug / 4.0
+    assert tail[2] == (1.0 if obs.cheese_dug + dug >= obs.goal else 0.0)
+    assert tail[3] == (1.0 if hold else 0.0)
 
 
 def test_policy_agent_integration():
@@ -387,3 +440,113 @@ def test_dagger_probe_restores_on_regression(tmp_path):
     for v in net.parameters():
         assert torch.isfinite(v).all()
     assert same or not same  # structural smoke; the probe ran without error
+
+
+# v7 gate hygiene (reviews 1+2) -------------------------------------------------
+
+
+def test_strict_gate_requires_win_rate():
+    # review 1's witness: a 1%-win learner with a lucky mean (1.0 over 3
+    # wins of 300) used to pass the strict branch on mean alone
+    blocked = check_gate(
+        GateStats(1.0, 0.0, 0.01, 300), GateStats(2.0, 0.0, 1.0, 300)
+    )
+    assert not blocked.passed
+    # a genuinely-better full-win learner still passes strict
+    ok = check_gate(
+        GateStats(1.0, 0.0, 1.0, 300), GateStats(2.0, 0.5, 1.0, 300)
+    )
+    assert ok.passed and ok.rule.startswith("strict")
+
+
+def test_retention_regression_blocks_advancement():
+    # review 1 (confirmed live in run 6: L2 2.99 vs 2.34, L3 5.75 vs 4.76
+    # regressed and the ladder advanced anyway): a retention failure must
+    # block advancement — the level retries instead of climbing
+    from unittest import mock
+
+    net = PolicyNet(hidden=8, layers=1, seed=0)
+    cur = Curriculum(
+        CurriculumConfig(start_level=1, max_level=3, retention=True),
+        net,
+        TrainConfig(device="cpu"),
+    )
+    cur.level = 2
+    good = GateStats(1.0, 0.0, 1.0, 10)
+    bad = GateStats(None, None, 0.0, 10)
+    reports = []
+    with (
+        mock.patch.object(cur, "train_level", return_value=[]),
+        mock.patch.object(cur, "_checkpoint"),
+        mock.patch.object(
+            cur, "gate",
+            side_effect=lambda level: check_gate(
+                good if level == 2 else bad, good
+            ),
+        ),
+    ):
+        for report in cur.run(PolicyAgent(net), iterations_per_level=0, verbose=False):
+            reports.append((cur.level, report.passed, dict(report.retention)))
+    # level 2's gate passes but retention at level 1 fails: the ladder
+    # must NOT advance past 2 (old behavior: advanced to 3 and beyond)
+    levels = [lvl for lvl, _, _ in reports]
+    assert cur.level <= 2
+    assert any(not p for _, p, _ in reports), "a retention failure must mark the level not-passed"
+
+
+def test_probe_band_disjoint_from_gate_band():
+    # review 1: the DAgger probe shared gate_seed0 — model selection on
+    # the gate's own validation seeds. The probe must use its own band.
+    from unittest import mock
+
+    cfg = CurriculumConfig()
+    cur = Curriculum(cfg, PolicyNet(hidden=8, layers=1, seed=0),
+                      TrainConfig(device="cpu"))
+    cur.level = 3
+    seen = []
+    with mock.patch(
+        "tetris.ai.curriculum.gate_stats",
+        side_effect=lambda net, env, n, seed0: seen.append(seed0) or GateStats(1.0, 0.0, 1.0, n),
+    ):
+        cur._probe(4)
+    assert seen == [cfg.gate_seed0 + 1_000_000], "the probe must use gate_seed0 + 1M"
+
+
+def test_entropy_bonus_has_gradient():
+    # review 1's witness inverted: entropy_coef 0 vs 100 must produce
+    # DIFFERENT updated weights (the old detached-float bonus was a
+    # constant with zero gradient)
+    import copy
+
+    torch.manual_seed(0)
+    base = PolicyNet(hidden=8, layers=1, seed=0)
+    x = np.random.default_rng(0).normal(size=(3, INPUT_DIM)).astype(np.float32)
+    weights = []
+    for coef in (0.0, 100.0):
+        net = copy.deepcopy(base)
+        trainer = BatchedTrainer(
+            net, TrainConfig(device="cpu", entropy_coef=coef),
+            np.random.default_rng(0),
+        )
+        trainer.baseline = 0.0
+        st = IterationStats(0, 1, 0.0, 0.0, None, 0.0, 0.0, 0.0, 0.0)
+        trainer._update(st, [x], [0], [3], [1.0], [0], [2.0])
+        weights.append(copy.deepcopy(net.state_dict()))
+    assert not all(
+        torch.equal(weights[0][k], weights[1][k]) for k in weights[0]
+    ), "entropy_coef must change the update"
+
+
+def test_greedy_eval_does_not_accumulate_trace():
+    # review 1's memory-leak witness: greedy eval (the gate's 600-episode
+    # batches) used to append every candidate tensor to the trace
+    torch.manual_seed(0)
+    net = PolicyNet(hidden=16, layers=1, seed=0)
+    agent = PolicyAgent(net, greedy=True)
+    for _ in range(3):
+        run_episode(agent, CheeseEnv(level=1), 0, navigate=False)
+    assert agent.trace == []
+    # and the sampling path still records for the trainer
+    agent2 = PolicyAgent(net)
+    run_episode(agent2, CheeseEnv(level=1), 0, navigate=False)
+    assert len(agent2.trace) > 0

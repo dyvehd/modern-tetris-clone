@@ -6,27 +6,40 @@ score the result, commit the best first move. The beam carries plans over
 the observed preview queue — a beam of depth d plans exactly the pieces the
 agent can see, the user's fixed-6-piece window made concrete.
 
-Node model (exactly the engine's hold rules):
-- placing a piece consumes it; the child's active piece is queue[0], and
-  can_hold resets to True (the engine resets hold at the next spawn),
-- the hold branch (only when can_hold) places what the hold brings out,
-  stashing the current piece; the child cannot hold again immediately.
-Hold is therefore a branch at every ply, not just the first.
+Node model (exactly the engine's hold rules — the transitions match
+``Game._spawn``/``_hold`` semantics, validated in review 2's repro):
+- placing a piece consumes it; the child's active piece is queue[0] and
+  can_hold resets to True after the lock (the engine resets hold at the
+  next spawn),
+- a hold branch with a filled hold places the held piece and stashes
+  queue[0]; a hold branch with an empty hold stashes queue[0] and places
+  queue[1] (the engine consumes queue[0] to fill the hold) — the child's
+  next piece is queue[2] there,
+- the child of a hold cannot hold again immediately (can_hold False).
 
-Two approximations, both documented and only affecting plan *accuracy*
-beyond what the agent commits, never legality:
+One approximation, documented and affecting plan *accuracy* beyond what
+the agent commits, never legality:
 
 - **Dug counting**: cheese is bottom-anchored, so a cleared row counts as
   dug cheese iff it lies within the bottom ``cheese_on_board`` rows of the
   pre-clear board (mixed cheese/junk rows count — matching the engine's
   contains-garbage style test; a fully-junk row inside the cheese region
   is the only divergence, and it cannot arise while the region is pure).
-- **Quiescence leaves**: a placement that clears nothing is a beam leaf.
-  Under Jstris refill semantics the cheese would top back up (with RNG hole
-  positions the search cannot know), so the position after a combo break is
-  unknowable in advance — the move is scored by eval alone and not expanded
-  (the Cold Clear quiescence analog). Clearing plans stay exact: within a
-  combo the stack only drains, never refills.
+
+Leaf rule (refill-exact): a placement is expanded unless the engine would
+refill after it — a no-clear lock when the cheese on board has dropped
+below its target (``min(stack, goal − dug)``). Below level 10 the target is
+always already on board (no refill ever fires); at level 10 a top-up row
+can appear after a no-clear lock, and positions past such a lock are
+unknowable in advance (the hole position is engine RNG) — those, and only
+those, are leaves. Wins are terminals. All other placements — clearing or
+not — are expanded, so setup moves are planned like any other move.
+
+Plans are compared at a common horizon: winning plans by fewest pieces
+(pieces dominate eval: a win is a win), then shortest; non-winning plans by
+eval + lines-weight × cheese dug along the plan (progress toward the goal
+is comparable across stopping depths only when credited along the plan,
+not just at the board face).
 """
 
 from __future__ import annotations
@@ -34,7 +47,7 @@ from __future__ import annotations
 from ..engine import board as B
 from ..engine.constants import FIELD_H, PieceType
 from .agents import BaseAgent
-from .cheese import Decision, Obs, apply_placement, candidate_moves
+from .cheese import Decision, Obs, candidate_moves
 from .eval import EvalWeights, eval_board
 from .movegen import Placement, enumerate_placements
 
@@ -69,7 +82,7 @@ class OnePlyAgent(BaseAgent):
         w = self.weights
         best_score = float("-inf")
         best: Decision | None = None
-        for placement, hold in _candidates(obs):
+        for placement, hold in candidate_moves(obs):
             rows_after, lines, dug = lock_and_count(list(obs.rows), placement, obs.cheese_on_board)
             score = eval_board(rows_after, w) + w.lines * lines
             if obs.cheese_dug + dug >= obs.goal:
@@ -81,20 +94,17 @@ class OnePlyAgent(BaseAgent):
         return best
 
 
-def _candidates(obs: Obs) -> list[tuple[Placement, bool]]:
-    """(placement, hold) pairs — the shared action-space definition in
-    :func:`tetris.ai.cheese.candidate_moves`."""
-    return candidate_moves(obs)
-
-
 class _Node:
-    """One beam node: a plan prefix. The pieces consumed after the first
-    move are queue_rest[0], queue_rest[1], ... (a hold swaps queue_rest[0]
-    with hold)."""
+    """One beam node: a plan prefix. ``pieces`` placements have been
+    consumed; the next piece to plan is ``queue_rest[0]`` (a hold swaps
+    what it places, not the queue's order — see :func:`_hold_transitions`).
+    ``refill`` marks the refill-exact leaf: the placement that made this
+    node cleared nothing while cheese was below target, so the engine
+    would top it up with unknowable rows next spawn."""
 
     __slots__ = (
         "rows", "hold", "can_hold", "queue_rest", "dug", "cheese_left",
-        "score", "first", "pieces",
+        "score", "first", "pieces", "refill",
     )
 
     def __init__(
@@ -108,6 +118,7 @@ class _Node:
         score: float,
         first: Decision,
         pieces: int,
+        refill: bool = False,
     ):
         self.rows = rows
         self.hold = hold
@@ -118,14 +129,44 @@ class _Node:
         self.score = score
         self.first = first
         self.pieces = pieces
+        self.refill = refill
+
+
+def _hold_transitions(
+    node: _Node,
+) -> list[tuple[PieceType, bool, PieceType | None, bool, tuple[PieceType, ...]]]:
+    """The engine's exact piece branches at a node, each as
+    ``(piece, hold_used, hold_after, can_hold_after, queue_after)``:
+    the piece to place now, whether it took the hold action, and the
+    child's hold / hold-usability / queue state.
+
+    Engine semantics (``Game._hold`` + ``_spawn``): a plain placement
+    consumes the piece and hold resets to usable at the next lock; a hold
+    with a filled hold places the held piece and stashes the active one
+    (the queue is untouched); a hold with an empty hold stashes the
+    active piece into hold and places queue[0], consuming it.
+    """
+    out = []
+    if node.queue_rest:
+        # plain placement: the active piece; hold resets after the lock
+        out.append((node.queue_rest[0], False, node.hold, True, node.queue_rest[1:]))
+    if node.can_hold:
+        if node.hold is not None and node.queue_rest:
+            # filled hold: place the held piece, stash the active one
+            out.append((node.hold, True, node.queue_rest[0], True, node.queue_rest[1:]))
+        elif node.hold is None and len(node.queue_rest) >= 2:
+            # empty hold: stash the active piece, place queue[0]
+            out.append((node.queue_rest[1], True, node.queue_rest[0], True, node.queue_rest[2:]))
+    return out
 
 
 class BeamAgent(BaseAgent):
-    """Beam search over the preview queue. ``width`` best nodes survive
-    each ply; ``depth`` pieces are planned at most (capped by the visible
-    queue + hold). Win terminals score the win bonus minus a per-piece
-    decay, so among winning plans the shortest is preferred — the property
-    that finds the 2-piece wins on level-1 edge seeds that 1-ply misses."""
+    """Beam search over the visible queue. ``width`` best nodes survive
+    each ply; ``depth`` pieces are planned at most. Engine-exact hold
+    transitions (see :func:`_hold_transitions`), the refill-exact leaf
+    rule, and horizon-consistent plan comparison (module docs). Among
+    winning plans the shortest is preferred — the property that finds
+    the 2-piece wins on edge seeds that 1-ply misses."""
 
     def __init__(
         self,
@@ -144,76 +185,82 @@ class BeamAgent(BaseAgent):
 
     def decide(self, obs: Obs) -> Decision:
         w = self.weights
+        stack = obs.stack  # the env's cheese-stack cap (the refill target)
 
-        # ply 1: the decision itself — active or hold, scored and kept.
-        # A no-clear placement is a quiescence leaf at every ply (including
-        # this one): under Jstris refill semantics the cheese tops back up
-        # with unknowable hole positions after it, so no future win may be
-        # credited to a no-clear move.
-        frontier: list[_Node] = []
-        leaves: list[_Node] = []
-        for placement, hold in _candidates(obs):
-            rows_after, lines, dug = lock_and_count(
-                list(obs.rows), placement, obs.cheese_on_board
-            )
-            score = eval_board(rows_after, w) + w.lines * lines
-            if obs.cheese_dug + dug >= obs.goal:
-                score += w.win - self.win_decay  # a 1-piece win beats longer wins
-            # the hold branch stashes the active piece; the queue is untouched
-            hold_after = obs.active if hold else obs.hold
-            node = _Node(
-                rows_after, hold_after, not hold, obs.queue,
-                obs.cheese_dug + dug, max(0, obs.cheese_on_board - dug),
-                score, Decision(placement, hold=hold), 1,
-            )
-            (frontier if lines > 0 else leaves).append(node)
-        if not frontier and not leaves:
+        # root: the engine state as observed — queue_rest carries the
+        # active piece ahead of the visible previews, so ply-1 branches
+        # are exactly candidate_moves(obs) (the shared action space).
+        root = _Node(
+            list(obs.rows), obs.hold, obs.can_hold,
+            (obs.active,) + tuple(obs.queue),
+            obs.cheese_dug, obs.cheese_on_board,
+            0.0, None, 0,
+        )
+
+        children = self._expand(obs, root, stack)
+        if not children:
             raise RuntimeError("no reachable placements for a live piece")
-        best_seen = max(frontier + leaves, key=lambda n: n.score)
-        frontier.sort(key=lambda n: n.score, reverse=True)
+        wins = [c for c in children if c.dug >= obs.goal]
+        leaves = [c for c in children if c.refill]
+        frontier = [c for c in children if not c.refill and c.dug < obs.goal]
+
+        # plans are compared at a common horizon: the best frontier node
+        # or leaf seen at the deepest ply reached so far
+        best = max(children, key=lambda n: n.score)
+        frontier.sort(key=lambda n: -n.score)
         frontier = frontier[: self.width]
 
-        # plies 2..depth: expand clearing plans only — both the parent and
-        # the child must have cleared (see the quiescence rule above)
         for _ in range(self.depth - 1):
             if not frontier:
                 break
             nxt: list[_Node] = []
             for node in frontier:
-                if node.dug >= obs.goal or not node.queue_rest:
-                    continue  # won already, or no visible piece left to plan
-                piece = node.queue_rest[0]
-                rest = node.queue_rest[1:]
-                rows = node.rows
-                for p in enumerate_placements(rows, piece, allow_180=obs.allow_180):
-                    rows2, lines, dug = lock_and_count(rows, p, node.cheese_left)
-                    if lines == 0:
-                        continue  # quiescence: no-clear continuations are leaves
-                    score = eval_board(rows2, w) + w.lines * lines
-                    if node.dug + dug >= obs.goal:
-                        score += w.win - self.win_decay * (node.pieces + 1)
-                    nxt.append(_Node(
-                        rows2, node.hold, True, rest,
-                        node.dug + dug, max(0, node.cheese_left - dug),
-                        score, node.first, node.pieces + 1,
-                    ))
-                # the hold swap: place what hold brings instead of queue_rest[0]
-                if node.can_hold and node.hold is not None:
-                    for p in enumerate_placements(rows, node.hold, allow_180=obs.allow_180):
-                        rows2, lines, dug = lock_and_count(rows, p, node.cheese_left)
-                        if lines == 0:
-                            continue
-                        score = eval_board(rows2, w) + w.lines * lines
-                        if node.dug + dug >= obs.goal:
-                            score += w.win - self.win_decay * (node.pieces + 1)
-                        nxt.append(_Node(
-                            rows2, piece, False, rest,
-                            node.dug + dug, max(0, node.cheese_left - dug),
-                            score, node.first, node.pieces + 1,
-                        ))
+                nxt.extend(self._expand(obs, node, stack, first=node.first))
             if not nxt:
                 break
-            nxt.sort(key=lambda n: n.score, reverse=True)
-            frontier = nxt[: self.width]
-            best_seen = max(best_seen, max(frontier, key=lambda n: n.score), key=lambda n: n.score)
-        return best_seen.first
+            for n in nxt:
+                if n.dug >= obs.goal:
+                    wins.append(n)
+                elif n.refill:
+                    leaves.append(n)
+            frontier = [n for n in nxt if not n.refill and n.dug < obs.goal]
+            frontier.sort(key=lambda n: -n.score)
+            frontier = frontier[: self.width]
+            if frontier or leaves:
+                best = max([best] + frontier + leaves, key=lambda n: n.score)
+
+        # a win is a win: among winning plans the shortest is best
+        if wins:
+            return min(wins, key=lambda n: (n.pieces, -n.score)).first
+        return best.first
+
+    def _expand(
+        self, obs: Obs, node: _Node, stack: int, first: Decision | None = None
+    ) -> list[_Node]:
+        """Children of ``node`` over every engine-branch placement. A child
+        is a refill leaf when the engine would top the cheese back up after
+        its lock: a no-clear lock with cheese below target (the hole position
+        of the new row is engine RNG — unknowable, so not plannable)."""
+        w = self.weights
+        out = []
+        for piece, hold_used, hold_after, can_hold_after, queue_after in _hold_transitions(node):
+            for p in enumerate_placements(node.rows, piece, allow_180=obs.allow_180):
+                rows2, lines, dug = lock_and_count(node.rows, p, node.cheese_left)
+                total_dug = node.dug + dug
+                on_board = max(0, node.cheese_left - dug)
+                won = total_dug >= obs.goal
+                target = min(stack, obs.goal - total_dug)
+                refill = lines == 0 and target - on_board > 0
+                # credit digging progress along the plan so stopping depths
+                # are comparable; wins dominate by pieces, shortest first
+                score = eval_board(rows2, w) + w.lines * total_dug
+                if won:
+                    score = w.win - self.win_decay * (node.pieces + 1)
+                out.append(_Node(
+                    rows2, hold_after, can_hold_after, queue_after,
+                    total_dug, on_board,
+                    score,
+                    first if first is not None else Decision(p, hold=hold_used),
+                    node.pieces + 1, refill,
+                ))
+        return out
