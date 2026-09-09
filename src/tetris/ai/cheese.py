@@ -105,8 +105,10 @@ class CheeseEnv:
 class Obs:
     """A snapshot of everything the agent may know at a decision point:
     the board, the active piece, hold, the next ``queue`` pieces (already
-    trimmed to the env's preview count), and the cheese counters. Frozen
-    and copied — an agent cannot mutate the engine through it."""
+    trimmed to the env's preview count), the cheese counters, and the
+    env's cheese-stack cap (the refill target — the search's leaf rule
+    needs it). Frozen and copied — an agent cannot mutate the engine
+    through it."""
 
     rows: tuple[int, ...]
     active: PieceType
@@ -118,6 +120,7 @@ class Obs:
     goal: int
     pieces_placed: int
     allow_180: bool
+    stack: int = 9  # the env's cheese_rows cap (Jstris: 9)
 
     def placements(self) -> list[Placement]:
         """Every reachable resting placement of the active piece."""
@@ -169,13 +172,14 @@ def _observe(game: Game, env: CheeseEnv) -> Obs:
         active=active.type,
         hold=game.hold_type,
         can_hold=game.can_hold and game.cfg.hold_enabled,
-        queue=tuple(game.queue[: env.previews]),
-        cheese_on_board=game.cheese_on_board,
-        cheese_dug=game.cheese_dug,
-        goal=env.level,
-        pieces_placed=game.pieces_placed,
-        allow_180=env.allow_180,
-    )
+    queue=tuple(game.queue[: env.previews]),
+    cheese_on_board=game.cheese_on_board,
+    cheese_dug=game.cheese_dug,
+    goal=env.level,
+    pieces_placed=game.pieces_placed,
+    allow_180=env.allow_180,
+    stack=env.stack,
+)
 
 
 def run_episode(agent, env: CheeseEnv, seed: int, *, navigate: bool = True) -> EpisodeResult:

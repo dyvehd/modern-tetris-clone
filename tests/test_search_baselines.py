@@ -11,15 +11,19 @@ refill destroyed).
 """
 
 import pytest
+from unittest import mock
 
 from tetris.ai import (
     BeamAgent,
     CheeseEnv,
     GreedyDigAgent,
     OnePlyAgent,
+    candidate_moves,
     run_batch,
     run_episode,
 )
+from tetris.ai import search
+from tetris.ai.cheese import _observe
 from tetris.ai.eval import (
     EvalWeights,
     column_heights,
@@ -32,6 +36,7 @@ from tetris.ai.eval import (
 from tetris.ai.search import lock_and_count
 from tetris.engine import board as B
 from tetris.engine.constants import FIELD_H, PieceType
+from tetris.engine.game import Action, Game
 
 
 def _board(*mods) -> list[int]:
@@ -203,3 +208,108 @@ def test_beam_direct_and_navigated_agree():
         d = run_episode(agent, env, 1, navigate=False)
         n = run_episode(agent, env, 1, navigate=True)
         assert (d.pieces, d.dug, d.won, d.reason) == (n.pieces, n.dug, n.won, n.reason)
+
+
+# corrected teacher (reviews 1+2: engine-exact hold/queue transitions,
+# refill-exact leaf rule, horizon-consistent comparison) -----------------------
+
+
+def test_l2_seed35_two_piece_win():
+    # review 2's decisive counterexample: the old beam took 4 pieces where
+    # a legal 2-piece solution exists (S then L, replayed through the real
+    # engine in their e8 witness). The corrected beam must take 2.
+    env = CheeseEnv(level=2)
+    r = run_episode(BeamAgent(width=20, depth=4), env, 35, navigate=False)
+    assert r.won and r.pieces == 2
+    # and through real inputs — the navigated path must agree
+    n = run_episode(BeamAgent(width=20, depth=4), env, 35, navigate=True)
+    assert (n.won, n.pieces) == (True, 2)
+
+
+def test_empty_hold_transition_matches_engine():
+    # the old bug (review 1's hold witness): after an empty-hold first
+    # placement the beam kept the whole queue as the continuation (as if
+    # queue[0] were still next) and marked hold unusable; the engine
+    # stashes queue[0] into hold and hold resets usable after the lock.
+    # Every hold-flagged root child must match a real engine clone.
+    env = CheeseEnv(level=3)
+    game = Game(env.game_config(), seed=0)
+    game.tick()
+    obs = _observe(game, env)
+    nodes = []
+    OriginalNode = search._Node
+
+    class CaptureNode(OriginalNode):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            nodes.append(self)
+
+    with mock.patch.object(search, "_Node", CaptureNode):
+        search.BeamAgent(width=20, depth=1).decide(obs)
+    hold_nodes = [n for n in nodes if n.first is not None and n.first.hold]
+    assert hold_nodes, "the empty hold at an episode start must branch"
+
+    for node in hold_nodes:
+        child = game.clone()
+        child.tick([Action.HOLD])
+        piece = node.first.placement.piece
+        assert child.active is not None and child.active.type is piece
+        child.active.rot, child.active.x, child.active.y = (
+            node.first.placement.rot, node.first.placement.x, node.first.placement.y
+        )
+        child.last_action = None
+        child.tick([Action.HARD_DROP])
+        assert node.queue_rest[0] is child.active.type, (
+            f"beam planned {node.queue_rest[0].name} next, "
+            f"engine spawns {child.active.type.name}"
+        )
+        assert node.can_hold == child.can_hold, (
+            f"beam can_hold={node.can_hold}, engine can_hold={child.can_hold}"
+        )
+
+
+def test_first_move_is_in_shared_action_space():
+    # ply-1 branches must be exactly candidate_moves(obs): the policy
+    # learner's action space and the beam's first move agree by
+    # construction (the label of every distilled decision is a candidate)
+    env = CheeseEnv(level=3)
+    game = Game(env.game_config(), seed=7)
+    game.tick()
+    obs = _observe(game, env)
+    decision = BeamAgent(width=20, depth=4).decide(obs)
+    moves = candidate_moves(obs)
+    assert any(
+        p == decision.placement and h == decision.hold for p, h in moves
+    ), "the beam's first move must be a legal candidate"
+
+
+def test_hold_transitions_pure_helper():
+    # _hold_transitions enumerates the engine's exact branches; pin all
+    # three shapes: plain, filled-hold swap, and the empty-hold stash
+    from tetris.ai.search import _Node, _hold_transitions
+
+    node = _Node(
+        rows=[0] * FIELD_H, hold=None, can_hold=True,
+        queue_rest=(PieceType.I, PieceType.O, PieceType.T),
+        dug=0, cheese_left=0, score=0.0, first=None, pieces=0,
+    )
+    branches = _hold_transitions(node)
+    assert branches[0] == (PieceType.I, False, None, True, (PieceType.O, PieceType.T))
+    # empty hold: place queue[0] (O), stash the active (I), next is queue[1]
+    assert branches[1] == (PieceType.O, True, PieceType.I, True, (PieceType.T,))
+
+    node2 = _Node(
+        rows=[0] * FIELD_H, hold=PieceType.S, can_hold=True,
+        queue_rest=(PieceType.I, PieceType.O), dug=0, cheese_left=0,
+        score=0.0, first=None, pieces=0,
+    )
+    branches2 = _hold_transitions(node2)
+    assert branches2[0] == (PieceType.I, False, PieceType.S, True, (PieceType.O,))
+    assert branches2[1] == (PieceType.S, True, PieceType.I, True, (PieceType.O,))
+
+    node3 = _Node(
+        rows=[0] * FIELD_H, hold=PieceType.J, can_hold=False,
+        queue_rest=(PieceType.I, PieceType.O), dug=0, cheese_left=0,
+        score=0.0, first=None, pieces=0,
+    )
+    assert _hold_transitions(node3) == [(PieceType.I, False, PieceType.J, True, (PieceType.O,))]
