@@ -29,7 +29,7 @@ below).
 python3 -m venv .venv
 .venv/bin/pip install -e ".[ai,dev]"    # engine + AI + tests
 .venv/bin/pip install -e ".[game]"     # only if you want to play
-.venv/bin/pytest                       # 274 tests, ~90 s
+.venv/bin/pytest                       # 275 tests, ~90 s
 ```
 
 - AI tests skip automatically when `torch` is missing (`[ai]` installs
@@ -88,11 +88,12 @@ physics between the three components fails the suite.
 
 Runner: `examples/cheese_learner.py` (CLI). Baselines table:
 `examples/cheese_baselines.py`. Checkpoints in `models/` (JSON
-state-dicts).
+state-dicts) — note `models/curriculum/cheese_policy_L1.json` is the
+128×2 laptop-era model (51,841 params), not a server-run checkpoint.
 
 ## Test suite map
 
-274 tests, ~90 s, all pure CPU:
+275 tests, ~90 s, all pure CPU:
 
 - `test_engine_*.py`, `test_rules_*.py` — the Guideline correctness
   core (spins, kicks, scoring, cheese refill, determinism, no-pygame).
