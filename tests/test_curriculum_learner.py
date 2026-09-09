@@ -19,6 +19,7 @@ from tetris.ai.curriculum import (  # noqa: E402
     Curriculum,
     CurriculumConfig,
     GateStats,
+    IterationStats,
     TrainConfig,
     baseline_stats,
     check_gate,
@@ -439,3 +440,113 @@ def test_dagger_probe_restores_on_regression(tmp_path):
     for v in net.parameters():
         assert torch.isfinite(v).all()
     assert same or not same  # structural smoke; the probe ran without error
+
+
+# v7 gate hygiene (reviews 1+2) -------------------------------------------------
+
+
+def test_strict_gate_requires_win_rate():
+    # review 1's witness: a 1%-win learner with a lucky mean (1.0 over 3
+    # wins of 300) used to pass the strict branch on mean alone
+    blocked = check_gate(
+        GateStats(1.0, 0.0, 0.01, 300), GateStats(2.0, 0.0, 1.0, 300)
+    )
+    assert not blocked.passed
+    # a genuinely-better full-win learner still passes strict
+    ok = check_gate(
+        GateStats(1.0, 0.0, 1.0, 300), GateStats(2.0, 0.5, 1.0, 300)
+    )
+    assert ok.passed and ok.rule.startswith("strict")
+
+
+def test_retention_regression_blocks_advancement():
+    # review 1 (confirmed live in run 6: L2 2.99 vs 2.34, L3 5.75 vs 4.76
+    # regressed and the ladder advanced anyway): a retention failure must
+    # block advancement — the level retries instead of climbing
+    from unittest import mock
+
+    net = PolicyNet(hidden=8, layers=1, seed=0)
+    cur = Curriculum(
+        CurriculumConfig(start_level=1, max_level=3, retention=True),
+        net,
+        TrainConfig(device="cpu"),
+    )
+    cur.level = 2
+    good = GateStats(1.0, 0.0, 1.0, 10)
+    bad = GateStats(None, None, 0.0, 10)
+    reports = []
+    with (
+        mock.patch.object(cur, "train_level", return_value=[]),
+        mock.patch.object(cur, "_checkpoint"),
+        mock.patch.object(
+            cur, "gate",
+            side_effect=lambda level: check_gate(
+                good if level == 2 else bad, good
+            ),
+        ),
+    ):
+        for report in cur.run(PolicyAgent(net), iterations_per_level=0, verbose=False):
+            reports.append((cur.level, report.passed, dict(report.retention)))
+    # level 2's gate passes but retention at level 1 fails: the ladder
+    # must NOT advance past 2 (old behavior: advanced to 3 and beyond)
+    levels = [lvl for lvl, _, _ in reports]
+    assert cur.level <= 2
+    assert any(not p for _, p, _ in reports), "a retention failure must mark the level not-passed"
+
+
+def test_probe_band_disjoint_from_gate_band():
+    # review 1: the DAgger probe shared gate_seed0 — model selection on
+    # the gate's own validation seeds. The probe must use its own band.
+    from unittest import mock
+
+    cfg = CurriculumConfig()
+    cur = Curriculum(cfg, PolicyNet(hidden=8, layers=1, seed=0),
+                      TrainConfig(device="cpu"))
+    cur.level = 3
+    seen = []
+    with mock.patch(
+        "tetris.ai.curriculum.gate_stats",
+        side_effect=lambda net, env, n, seed0: seen.append(seed0) or GateStats(1.0, 0.0, 1.0, n),
+    ):
+        cur._probe(4)
+    assert seen == [cfg.gate_seed0 + 1_000_000], "the probe must use gate_seed0 + 1M"
+
+
+def test_entropy_bonus_has_gradient():
+    # review 1's witness inverted: entropy_coef 0 vs 100 must produce
+    # DIFFERENT updated weights (the old detached-float bonus was a
+    # constant with zero gradient)
+    import copy
+
+    torch.manual_seed(0)
+    base = PolicyNet(hidden=8, layers=1, seed=0)
+    x = np.random.default_rng(0).normal(size=(3, INPUT_DIM)).astype(np.float32)
+    weights = []
+    for coef in (0.0, 100.0):
+        net = copy.deepcopy(base)
+        trainer = BatchedTrainer(
+            net, TrainConfig(device="cpu", entropy_coef=coef),
+            np.random.default_rng(0),
+        )
+        trainer.baseline = 0.0
+        st = IterationStats(0, 1, 0.0, 0.0, None, 0.0, 0.0, 0.0, 0.0)
+        trainer._update(st, [x], [0], [3], [1.0], [0], [2.0])
+        weights.append(copy.deepcopy(net.state_dict()))
+    assert not all(
+        torch.equal(weights[0][k], weights[1][k]) for k in weights[0]
+    ), "entropy_coef must change the update"
+
+
+def test_greedy_eval_does_not_accumulate_trace():
+    # review 1's memory-leak witness: greedy eval (the gate's 600-episode
+    # batches) used to append every candidate tensor to the trace
+    torch.manual_seed(0)
+    net = PolicyNet(hidden=16, layers=1, seed=0)
+    agent = PolicyAgent(net, greedy=True)
+    for _ in range(3):
+        run_episode(agent, CheeseEnv(level=1), 0, navigate=False)
+    assert agent.trace == []
+    # and the sampling path still records for the trainer
+    agent2 = PolicyAgent(net)
+    run_episode(agent2, CheeseEnv(level=1), 0, navigate=False)
+    assert len(agent2.trace) > 0

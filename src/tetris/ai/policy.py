@@ -170,6 +170,9 @@ class PolicyAgent(BaseAgent):
         x = encode_candidates(obs, moves)
         device = next(self.net.parameters()).device
         xt = torch.as_tensor(x, dtype=torch.float32, device=device)
+        record = not self.greedy  # greedy eval never trains; the trace
+        # would only accumulate candidate tensors across episodes (the
+        # gate's 600-episode batches leaked GPU memory before this)
         with torch.no_grad():
             scores = self.net(xt)
             logits = scores / self.temperature
@@ -177,17 +180,18 @@ class PolicyAgent(BaseAgent):
             idx = int(torch.argmax(probs).item()) if self.greedy else int(
                 torch.multinomial(probs, 1).item()
             )
-        logprob = float(torch.log(probs[idx] + 1e-12).item())
-        entropy = float(-(probs * torch.log(probs + 1e-12)).sum().item())
-        self.trace.append(
-            {
-                "x": xt,  # (n_candidates, INPUT_DIM) on device
-                "idx": idx,
-                "logprob": logprob,
-                "entropy": entropy,
-                "dug_before": obs.cheese_dug,  # for exact shaped returns
-            }
-        )
+        if record:
+            logprob = float(torch.log(probs[idx] + 1e-12).item())
+            entropy = float(-(probs * torch.log(probs + 1e-12)).sum().item())
+            self.trace.append(
+                {
+                    "x": xt,  # (n_candidates, INPUT_DIM) on device
+                    "idx": idx,
+                    "logprob": logprob,
+                    "entropy": entropy,
+                    "dug_before": obs.cheese_dug,  # for exact shaped returns
+                }
+            )
         placement, hold = moves[idx]
         return Decision(placement, hold=hold)
 
