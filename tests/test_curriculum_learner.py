@@ -550,3 +550,26 @@ def test_greedy_eval_does_not_accumulate_trace():
     agent2 = PolicyAgent(net)
     run_episode(agent2, CheeseEnv(level=1), 0, navigate=False)
     assert len(agent2.trace) > 0
+
+
+def test_gate_blocked_retry_draws_fresh_seeds():
+    # run 7b's L3 post-mortem: attempt 2 re-collected byte-identical
+    # distill data because the seed band was deterministic per level. A
+    # blocked attempt must advance the band.
+    cfg = CurriculumConfig()
+    cur = Curriculum(cfg, PolicyNet(hidden=8, layers=1, seed=0),
+                     TrainConfig(device="cpu"))
+    cur.level = 3
+    d0 = cur._distill_seed0()
+    assert d0 == 100_000_000 + 1_000_000 * 3
+    cur.attempts = 1
+    d1 = cur._distill_seed0()
+    assert d1 == d0 + 10_000, "retry must draw a disjoint distill band"
+    # DAgger rounds too — with an attempt stride that cannot collide with
+    # any level band (100M apart, level bands span 1M)
+    g0 = cur._dagger_seed0(0)
+    assert g0 == 200_000_000 + 1_000_000 * 3 + 100_000_000
+    assert cur._dagger_seed0(50) - cur._dagger_seed0(0) == 500_000
+    # every band stays below the gate band
+    assert cur._dagger_seed0(60) < 900_000_000
+    assert cur._distill_seed0() < 900_000_000

@@ -432,6 +432,11 @@ class Curriculum:
         self.train_cfg = train_cfg
         self.rng = rng or np.random.default_rng()
         self.level = cur_cfg.start_level
+        # gate-blocked retries at the same level must draw FRESH data: a
+        # retry that re-collects identical distill/DAgger seeds just
+        # re-memorizes the same decisions (run 7b's L3 attempt 2 hit
+        # 100% train / 65% held-out on byte-identical data)
+        self.attempts = 0
         # one trainer (and one Adam state) persists across the whole ladder
         self.trainer = BatchedTrainer(net, train_cfg, self.rng)
 
@@ -468,15 +473,24 @@ class Curriculum:
     # seed bands ---------------------------------------------------------------
 
     def _distill_seed0(self) -> int:
-        """Fresh teacher seeds for this level: band start + 1M/level."""
-        return 100_000_000 + 1_000_000 * self.level
+        """Fresh teacher seeds for this level: band start + 1M/level, plus
+        10k per blocked attempt — retries never reuse collected data."""
+        return 100_000_000 + 1_000_000 * self.level + 10_000 * self.attempts
 
     def _dagger_seed0(self, round_num: int) -> int:
         """Fresh policy-rollout seeds for this DAgger round: band start
-        + 1M/level + 10k/round — every round re-rolls fresh boards.
-        Round numbers 0..dagger_rounds-1 are collection rounds; 50+ is
-        reserved for the replay sample."""
-        return 200_000_000 + 1_000_000 * self.level + 10_000 * round_num
+        + 1M/level + 10k/round, plus 100M per blocked attempt — every
+        round re-rolls fresh boards, including across gate-blocked
+        retries (the 100M attempt stride keeps retry bands disjoint
+        from every level's band, which spans 1M). Round numbers
+        0..dagger_rounds-1 are collection rounds; 50+ is reserved for
+        the replay sample."""
+        return (
+            200_000_000
+            + 1_000_000 * self.level
+            + 10_000 * round_num
+            + 100_000_000 * self.attempts
+        )
 
     # warm-start / refinement ---------------------------------------------------
 
@@ -727,6 +741,7 @@ class Curriculum:
                     # twice-blocked rule)
                     report.passed = False
                     blocked += 1
+                    self.attempts += 1  # retry on FRESH data, not a re-run
                     if verbose:
                         print(
                             f"gate PASSED but retention failed — not advancing"
@@ -747,10 +762,12 @@ class Curriculum:
                     return
                 self.level = min(self.level + self.cfg.level_step, self.cfg.max_level)
                 blocked = 0
+                self.attempts = 0  # a new level starts its seed band fresh
                 if verbose:
                     print(f"gate PASSED — advancing to {self.level}: {gate.reason}")
             else:
                 blocked += 1
+                self.attempts += 1  # retry on FRESH data, not a re-run
                 if verbose:
                     print(f"gate blocked ({blocked}): {gate.reason}")
                 if blocked >= 2:
