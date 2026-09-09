@@ -205,10 +205,45 @@ first, afterstate encoding + 5 previews second, seed/gate/entropy
 hygiene third, then a cost-to-go value network on afterstates feeding
 the corrected search.
 
+## The v7 stack (2026-09-09, branch `ai/v7-teacher-repair`, merged)
+
+The reviews' fix order, implemented and measured:
+
+1. **Corrected teacher** (`BeamAgent` rewritten; `beam2.py` is the
+   reference): engine-exact hold/queue transitions (empty hold consumes
+   queue[0]; can_hold resets after every lock), the refill-exact leaf
+   rule (no-clear locks are leaves only when a refill would actually
+   fire — never below L10, so setup moves are planned), horizon-
+   consistent plan comparison. Measured on 20-seed batches: L10
+   43.61 → **24.20** pieces (20×4), L5 14.70 → **9.20**, L2 **2.15**
+   at 100% win; review 2's seed-35 counterexample is now a 2-piece win
+   (was 4). Pinned by regression tests including an engine-clone
+   transition-equivalence check.
+2. **Afterstate encoding** (INPUT_DIM 274 → 256): each candidate row is
+   the board *after* its placement locks and clears, plus lines/dug/win
+   and the hold flag; the shared context carries all 5 previews, hold,
+   active, counters. Distillation now holds out 10% of decisions and
+   logs strict held-out accuracy alongside training accuracy. Old-stack
+   checkpoints are refused at load (input_dim guard) — their labels are
+   invalidated, so silent misuse is impossible.
+3. **Gate hygiene**: the strict gate requires the win-rate check (a
+   1%-win lucky-mean learner no longer passes); retention regressions
+   block advancement instead of logging; the DAgger probe uses its own
+   seed band; the entropy bonus is computed on-graph (it had zero
+   gradient since the first run); greedy evaluation no longer leaks
+   candidate tensors per episode.
+
+Run 7 (the first ladder on this stack) is in flight on Molab; its
+numbers will land in the results table above. The next direction after
+the ladder re-baselines: the cost-to-go value network on afterstates
+trained from the corrected search and plugged back into it as the leaf
+evaluator (single-player expert iteration) — the reviews' convergence
+point, now unblocked.
+
 ## Reproducing
 
 ```bash
-.venv/bin/pytest                       # 275 tests
+.venv/bin/pytest                       # 286 tests
 .venv/py.sh examples/cheese_baselines.py          # baseline table
 .venv/py.sh examples/cheese_learner.py --hidden 256 --layers 3 \
     --distill-episodes 24000 --distill-window 3 --dagger-rounds 3 ...

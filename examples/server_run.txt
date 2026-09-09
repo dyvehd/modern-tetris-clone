@@ -1,23 +1,35 @@
 #!/usr/bin/env python
-"""Server-scale ladder run on the RTX Pro 6000 (Molab).
+"""Server-scale ladder run on the RTX Pro 6000 (Molab) — run 7, v7 stack.
 
-The v5 laptop run distilled a 128x2 net from 62k teacher decisions
-(96.4% teacher-decision accuracy, L1 optimum, L2 100%/2.44) and DAgger
-moved L2 to 2.51 at 99% — then stalled at the level-2 gate: the policy's
-97% win rate vs the beam's 100% blocked advancement, and the remaining
-gap was measured as scale (data rounds, net width).
+Run 6 (the old stack's baseline, per both reviews) climbed to L4 on ties
+with retention regressions logged-but-ignored and blocked at L5
+(18.18 vs the old beam's 16.12). Its labels came from the broken teacher
+(97% agreement with 1-ply; phantom hold continuations; no setup moves)
+and its encoding collided and overfit (train 91% / held-out 56%).
 
-This run is the scale-up: a fresh 256x3 net (202k params), 8k teacher
-episodes per level, DAgger rounds inside the ladder, 300-episode gates,
-19 forkserver workers. Same code as the laptop (GPU-first design paying
-off: --device is the only machine-specific knob).
+Run 7 is the corrected stack: the repaired beam teacher (engine-exact
+transitions, refill-exact leaves; L10 24.2 pieces at 20x4 — the old
+teacher: 43.6), the afterstate encoding (INPUT_DIM 256, held-out split
+logged), and enforced gates (win-rate in strict, retention blocking,
+probe on its own band). Fresh start — every old checkpoint is refused by
+the input_dim guard, by design.
 
-Usage (on the server):
+Teacher collection is ~2.4x slower per episode (setup moves are planned
+now); 19 forkserver workers absorb it (~13 eps/s at low levels).
+
+Usage (on the server, from the repo root):
     python3 examples/cheese_learner.py \
         --hidden 256 --layers 3 \
-        --distill-episodes 8000 --distill-epochs 60 --distill-chunk 20000 \
+        --distill-episodes 8000 --distill-epochs 300 --distill-chunk 10000 \
         --dagger-rounds 3 --dagger-episodes 400 --dagger-epochs 2 \
+        --dagger-replay 50000 \
         --iterations 8 --episodes 96 \
         --gate-episodes 300 \
-        --max-level 10
+        --max-level 10 --workers 19 \
+        > /marimo/ladder_run7.log 2>&1
+
+Checkpointing: Molab's storage policy (Aug 2026) wipes script-written
+files when the sandbox expires — pull models/curriculum/*.json out after
+each gate (they are small JSONs; the alarm/handover notes have the
+procedure).
 """
