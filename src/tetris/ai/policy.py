@@ -5,15 +5,19 @@ unchanged, on the RTX Pro 6000 server (``device`` is a constructor knob).
 The architecture is *score-per-candidate* — the shape the fusion bot uses
 for its policy/value net:
 
-    policy(obs) = softmax over candidates of MLP([ state | placement ])
+    policy(obs) = softmax over candidates of MLP([ context | afterstate ])
 
-Every candidate of one decision shares the same state vector; the MLP
-scores each "this board, this candidate" pair. Rollouts are engine-bound on
-CPU regardless of device (pure-Python stepping + movegen), so the training
-loop is **CPU rollout / GPU update**: trajectories are collected through
-the harness, then all decisions from all episodes are concatenated into
-one big forward/backward batch on the device — the seam PPO and
-search-oracle distillation (Deliverable 5) reuse.
+Each candidate row carries **the board after that placement locks and
+clears** (plus its lines/dug/win outcome), not the placement's shape
+coordinates. Review 2's matched A/B measured why: the old
+[state | 4x4-pattern | x-one-hot] encoding collides on distinct placements
+(x clipped off-field; vertical-I x = -2..0 identical), and its held-out
+agreement saturates at 56% while train climbs (memorization); the
+afterstate input reaches 72% held-out with hole-class errors 11.5% ->
+0.9% — it is also exactly the input a value function needs (the
+cost-to-go direction). The shared context half carries what does not
+vary within one decision: all 5 previews, hold, active, and the cheese
+counters.
 
 Importing torch is this module's job, not the package's: the rest of
 ``tetris.ai`` stays importable without it (engine, harness, search).
@@ -30,6 +34,7 @@ from torch import nn
 
 from .agents import BaseAgent
 from .cheese import Decision, Obs, candidate_moves
+from .search import lock_and_count
 from ..engine.constants import FIELD_H, FIELD_W, PieceType
 
 PIECES = list(PieceType)  # index order of the one-hot encodings
@@ -42,93 +47,72 @@ BOARD_ROWS = 20
 BOARD_COLS = FIELD_W
 
 STATE_DIM = (
-    BOARD_ROWS * BOARD_COLS  # occupancy, full resolution, row 0 = visible top
-    + FIELD_W  # column heights (0..20, /20)
-    + 2 * len(PIECES)  # active, hold one-hots
-    + len(PIECES)  # next queue piece
+    5 * len(PIECES)  # all 5 preview pieces, order-sensitive (35)
+    + len(PIECES)  # hold one-hot (7)
+    + len(PIECES)  # active one-hot (7)
     + 3  # cheese_on_board, cheese_dug, goal (scaled)
-    + 1  # pieces_placed (scaled)
 )
 PLACEMENT_DIM = (
-    16  # 4x4 cell occupancy pattern of the piece rotation
-    + FIELD_W  # column position one-hot (x, clipped to the field)
-    + 1  # normalized landing row
-    + 4  # rotation one-hot
+    BOARD_ROWS * BOARD_COLS  # board AFTER lock+clear, full resolution (200)
+    + 3  # lines/4, cheese dug by the placement/4, win flag
     + 1  # hold flag
-    + len(PIECES)  # piece one-hot
 )
 INPUT_DIM = STATE_DIM + PLACEMENT_DIM
 
 
 def encode_state(obs: Obs) -> np.ndarray:
-    """Board + piece context + cheese counters. Fixed length, float32."""
+    """The per-decision context: previews, hold, active, cheese counters.
+    Identical for every candidate of one decision."""
     v = np.zeros(STATE_DIM, dtype=np.float32)
     i = 0
-    # full-resolution occupancy of the visible field; rows above the
-    # skyline (buffer rows) are not encoded — placements there are rare
-    # (tucked setups near topout) and the piece context carries the rest
-    base = FIELD_H - BOARD_ROWS
-    for br in range(BOARD_ROWS):
-        row = obs.rows[base + br]
-        for bc in range(FIELD_W):
-            if (row >> bc) & 1:
-                v[i + br * BOARD_COLS + bc] = 1.0
-    i += BOARD_ROWS * BOARD_COLS
-    # column heights measured from the floor (0 = empty column) — a
-    # complementary view: the hole's column reads one cheese-row lower
-    for x in range(FIELD_W):
-        for ry in range(FIELD_H - BOARD_ROWS, FIELD_H):
-            if (obs.rows[ry] >> x) & 1:
-                v[i + x] = (FIELD_H - ry) / 20.0
-                break
-    i += FIELD_W
-    v[i + PIECE_INDEX[obs.active]] = 1.0
-    i += len(PIECES)
+    # all visible previews, in order — the teacher plans over every one of
+    # them, so the student must see what the teacher sees (the old
+    # encoding carried only queue[0]; two queues that permute the tail
+    # were literally indistinguishable to the net)
+    for k, piece in enumerate(obs.queue[:5]):
+        v[i + k * len(PIECES) + PIECE_INDEX[piece]] = 1.0
+    i += 5 * len(PIECES)
     if obs.hold is not None:
         v[i + PIECE_INDEX[obs.hold]] = 1.0
     i += len(PIECES)
-    if obs.queue:
-        v[i + PIECE_INDEX[obs.queue[0]]] = 1.0
+    v[i + PIECE_INDEX[obs.active]] = 1.0
     i += len(PIECES)
     v[i] = obs.cheese_on_board / 20.0
     v[i + 1] = obs.cheese_dug / 100.0
     v[i + 2] = obs.goal / 100.0
-    i += 3
-    v[i] = min(obs.pieces_placed / 200.0, 2.0)
     return v
 
 
-def encode_placement(placement, hold: bool) -> np.ndarray:
-    """One candidate: its 4x4 pattern, position, rotation, hold, piece."""
+def encode_afterstate(obs: Obs, placement, hold: bool) -> np.ndarray:
+    """One candidate's features: the board after this placement locks and
+    clears, its outcome (lines, cheese dug, win), and the hold flag.
+    Distinct placements produce distinct boards — no collisions by
+    construction."""
     v = np.zeros(PLACEMENT_DIM, dtype=np.float32)
+    rows_after, lines, dug = lock_and_count(list(obs.rows), placement, obs.cheese_on_board)
     i = 0
-    cell_set = set(placement.cells)
-    for cy in range(4):
-        for cx in range(4):
-            # cells are absolute (row, col); normalize to the placement box
-            rel = (placement.y + cy, placement.x + cx)
-            v[i + cy * 4 + cx] = 1.0 if rel in cell_set else 0.0
-    i += 16
-    x0 = max(0, min(placement.x, FIELD_W - 1))
-    v[i + x0] = 1.0
-    i += FIELD_W
-    v[i] = min(placement.y / FIELD_H, 1.0)
-    i += 1
-    v[i + (placement.rot % 4)] = 1.0
-    i += 4
+    base = FIELD_H - BOARD_ROWS
+    for br in range(BOARD_ROWS):
+        row = rows_after[base + br]
+        for bc in range(FIELD_W):
+            if (row >> bc) & 1:
+                v[i + br * BOARD_COLS + bc] = 1.0
+    i += BOARD_ROWS * BOARD_COLS
+    v[i] = lines / 4.0
+    v[i + 1] = dug / 4.0
+    v[i + 2] = 1.0 if obs.cheese_dug + dug >= obs.goal else 0.0
+    i += 3
     v[i] = 1.0 if hold else 0.0
-    i += 1
-    v[i + PIECE_INDEX[placement.piece]] = 1.0
     return v
 
 
 def encode_candidates(obs: Obs, moves: list[tuple]) -> np.ndarray:
-    """(n_candidates, INPUT_DIM): each row = [ state | candidate ]."""
+    """(n_candidates, INPUT_DIM): each row = [ context | afterstate ]."""
     state = encode_state(obs)
     rows = np.zeros((len(moves), INPUT_DIM), dtype=np.float32)
     for i, (placement, hold) in enumerate(moves):
         rows[i, :STATE_DIM] = state
-        rows[i, STATE_DIM:] = encode_placement(placement, hold)
+        rows[i, STATE_DIM:] = encode_afterstate(obs, placement, hold)
     return rows
 
 
@@ -229,8 +213,21 @@ def save_policy(net: PolicyNet, path: Path) -> None:
 
 
 def load_policy(path: Path, device: str = "cpu") -> tuple[PolicyNet, PolicyAgent]:
-    """Load a trained policy: returns (net, agent) with the net on device."""
+    """Load a trained policy: returns (net, agent) with the net on device.
+
+    Refuses checkpoints whose input layout does not match the current
+    encoding — the v7 afterstate encoding invalidates every old-stack
+    checkpoint (old labels and old dims), and loading one would silently
+    mispredict rather than error."""
     payload = json.loads(Path(path).read_text())
+    meta = payload.get("meta", {})
+    if meta.get("input_dim") != INPUT_DIM:
+        raise ValueError(
+            f"checkpoint input_dim {meta.get('input_dim')} != current "
+            f"{INPUT_DIM} — this checkpoint predates the afterstate "
+            "encoding and its labels are invalidated (see "
+            "docs/ai-direction-and-results.md); retrain from scratch"
+        )
     net = PolicyNet(hidden=payload["hidden"], layers=payload["layers"])
     net.load_state_dict({k: torch.as_tensor(v) for k, v in payload["state_dict"].items()})
     net = net.to(device)

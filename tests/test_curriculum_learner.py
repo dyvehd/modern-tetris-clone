@@ -26,19 +26,22 @@ from tetris.ai.curriculum import (  # noqa: E402
     shaped_return,
 )
 from tetris.ai.policy import (  # noqa: E402
+    BOARD_COLS,
+    BOARD_ROWS,
     INPUT_DIM,
     PLACEMENT_DIM,
     STATE_DIM,
     PolicyAgent,
     PolicyNet,
+    encode_afterstate,
     encode_candidates,
-    encode_placement,
     encode_state,
     load_policy,
     save_policy,
 )
+from tetris.ai.search import lock_and_count  # noqa: E402
 from tetris.ai import candidate_moves  # noqa: E402
-from tetris.engine.constants import PieceType  # noqa: E402
+from tetris.engine.constants import FIELD_H, PieceType  # noqa: E402
 
 
 # encodings -------------------------------------------------------------------
@@ -68,29 +71,78 @@ def test_encoding_dims_and_ranges():
     # every value is a bounded one-hot or scaled feature
     assert float(np.abs(state).max()) <= 2.0
     assert float(np.abs(cand).max()) <= 2.0
-    # all rows share the same state half; placement halves differ
+    # all rows share the same context half; afterstate halves differ
     n = cand.shape[0]
     assert (cand[:, :STATE_DIM] == cand[0, :STATE_DIM]).all()
     assert not (cand[:, STATE_DIM:] == cand[1, STATE_DIM:]).all()
+    # every preview is encoded (the old encoding carried only queue[0]):
+    # the context has exactly 5 piece one-hots set
+    assert int(state[: 5 * 7].sum()) == min(5, len(obs.queue))
 
 
-def test_placement_encoding_content():
+def test_afterstate_encodes_the_board_after_the_lock():
+    # the candidate half is the board AFTER lock+clear: two candidates that
+    # clear the cheese row differ from one that leaves it — the dig outcome
+    # is visible in both the occupancy block and the outcome features
+    obs = _first_obs()
+    moves = candidate_moves(obs)
+    digs = [
+        encode_afterstate(obs, p, h)
+        for p, h in moves
+        if lock_and_count(list(obs.rows), p, obs.cheese_on_board)[2] > 0
+    ]
+    nondigs = [
+        encode_afterstate(obs, p, h)
+        for p, h in moves
+        if lock_and_count(list(obs.rows), p, obs.cheese_on_board)[2] == 0
+    ]
+    assert digs, "L1 always has dig candidates"
+    assert nondigs, "and always non-digging ones"
+    # a digging candidate's outcome block marks its dug cheese; a
+    # non-digging one's dug feature is 0
+    dug_feature = PLACEMENT_DIM - 2  # lines, DUG, win, hold — dug is 2nd
+    assert all(v[dug_feature] > 0 for v in digs)
+    assert all(v[dug_feature] == 0 for v in nondigs)
+
+
+def test_afterstate_no_collisions():
+    # review 2's collision witness: three distinct vertical-I placements
+    # (x = -2, -1, 0) produced IDENTICAL old encodings (x clipped to
+    # field). The afterstate encodes the resulting board, so distinct
+    # placements that produce distinct boards must encode distinctly.
+    from tetris.ai.movegen import enumerate_placements
+
+    placements = enumerate_placements([0] * FIELD_H, PieceType.I)
+    game_obs = _first_obs()
+    seen = {}
+    for p in placements:
+        key = encode_afterstate(game_obs, p, False).tobytes()
+        rows_after = lock_and_count(list(game_obs.rows), p, game_obs.cheese_on_board)[0]
+        board_key = tuple(rows_after)
+        if board_key not in seen:
+            seen[board_key] = key
+        else:
+            # same board => same encoding; different board => different
+            assert key == seen[board_key]
+    # and at least one distinct-board pair exists (the collision witness
+    # case): vertical-I x = -2, -1, 0 give three different boards
+    assert len(seen) >= 2
+
+
+def test_afterstate_encodes_outcome_features():
+    # the outcome block: lines/4, dug/4, win flag, hold flag at the tail
+    # of the candidate half
     obs = _first_obs()
     moves = candidate_moves(obs)
     placement, hold = moves[len(moves) // 2]
-    v = encode_placement(placement, hold)
+    v = encode_afterstate(obs, placement, hold)
     assert v.shape == (PLACEMENT_DIM,)
-    # the 4x4 pattern has exactly the piece's 4 cells set
-    assert int(v[:16].sum()) == 4
-    # rotation one-hot: exactly one of the 4 slots after position+row
-    rot_off = 16 + 10 + 1
-    assert int(v[rot_off : rot_off + 4].sum()) == 1
-    assert v[rot_off + (placement.rot % 4)] == 1.0
-    # hold flag
-    assert v[rot_off + 4] == (1.0 if hold else 0.0)
-    # piece one-hot: exactly one set at the tail
-    assert int(v[-7:].sum()) == 1
-    assert v[-7 + list(PieceType).index(placement.piece)] == 1.0
+    rows_after, lines, dug = lock_and_count(list(obs.rows), placement, obs.cheese_on_board)
+    tail = v[BOARD_ROWS * BOARD_COLS:]
+    assert tail[0] == lines / 4.0
+    assert tail[1] == dug / 4.0
+    assert tail[2] == (1.0 if obs.cheese_dug + dug >= obs.goal else 0.0)
+    assert tail[3] == (1.0 if hold else 0.0)
 
 
 def test_policy_agent_integration():

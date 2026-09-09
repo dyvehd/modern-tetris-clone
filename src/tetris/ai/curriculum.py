@@ -510,13 +510,26 @@ class Curriculum:
             self.net, lr=self.cfg.distill_lr, device=self.train_cfg.device,
             chunk_decisions=self.cfg.distill_chunk_decisions,
         )
+        # held-out split: the last 10% of decisions never enter training —
+        # run 6's climbing train accuracy was partly memorization (review
+        # 2's matched A/B: train 91% while held-out fell), so the ladder
+        # logs both from now on
+        n_eval = max(1, len(data) // 10)
+        eval_data, train_data = data[-n_eval:], data[:-n_eval]
+
+        def held_out_acc() -> float:
+            from .distill import _group_accuracy_strict
+
+            return _group_accuracy_strict(self.net, eval_data, self.train_cfg.device)
+
         for epoch in range(self.cfg.distill_epochs):
-            stats = trainer.train_batch(data)
+            stats = trainer.train_batch(train_data)
             if (epoch + 1) % 10 == 0 or epoch == 0:
                 print(
                     f"  distill L{self.level}: epoch {epoch + 1}/{self.cfg.distill_epochs}"
-                    f" | {len(data)} decisions | loss {stats.loss:.3f}"
-                    f" | teacher-move accuracy {stats.accuracy:.1%}",
+                    f" | {len(train_data)} decisions | loss {stats.loss:.3f}"
+                    f" | teacher-move accuracy {stats.accuracy:.1%}"
+                    f" | held-out {held_out_acc():.1%}",
                     flush=True,
                 )
 

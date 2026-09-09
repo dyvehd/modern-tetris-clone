@@ -185,3 +185,22 @@ def _group_accuracy(scores, group_t, n_groups, targets):
     max_g.scatter_reduce_(0, group_t, scores, reduce="amax", include_self=True)
     target_is_max = scores[targets] == max_g[group_t[targets]]
     return float(target_is_max.float().mean().item())
+
+
+def _group_accuracy_strict(net, data, device: str = "cpu") -> float:
+    """Strict (tie-unsatisfying) held-out accuracy: the net's unique
+    argmax per decision must equal the teacher's index exactly. Used for
+    held-out evaluation during distillation — the training-time
+    ``_group_accuracy`` counts ties as correct, which overstates fit on
+    the frozen eval split."""
+    net = net.to(device)
+    net.eval()
+    correct = 0
+    with torch.no_grad():
+        for x, target in data:
+            scores = net(torch.as_tensor(x, dtype=torch.float32, device=device))
+            a = int(torch.argmax(scores).item())
+            correct += int(a == target)
+    acc = correct / len(data) if data else 0.0
+    net.train()
+    return acc
