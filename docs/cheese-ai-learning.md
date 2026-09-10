@@ -317,3 +317,14 @@ real inputs for full fidelity).
 | retention | re-gating easier levels after an advancement |
 | ladder run | one full curriculum pass from start level to max level |
 | checkpoint | saved policy network after passing a level |
+
+---
+
+> **Note (v7 update)**: sections above describing the policy's *input
+> encoding* predate the v7 afterstate encoding. The candidate part is no
+> longer the 4×4 pattern + position + rotation; it is the **board after
+> the placement locks and clears** plus its outcome flags, and the state
+> part now carries all 5 previews. See [glossary.md](glossary.md)
+> (afterstate) and [ai-direction-and-results.md](ai-direction-and-results.md)
+> (the v7 stack) for current definitions; the training-workflow concepts
+> in this document remain accurate.
