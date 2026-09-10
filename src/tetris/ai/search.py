@@ -100,11 +100,13 @@ class _Node:
     what it places, not the queue's order — see :func:`_hold_transitions`).
     ``refill`` marks the refill-exact leaf: the placement that made this
     node cleared nothing while cheese was below target, so the engine
-    would top it up with unknowable rows next spawn."""
+    would top it up with unknowable rows next spawn. ``lines`` and
+    ``hold_used`` record this node's own creating placement (consumed by
+    the value-guided beam's afterstate rows)."""
 
     __slots__ = (
         "rows", "hold", "can_hold", "queue_rest", "dug", "cheese_left",
-        "score", "first", "pieces", "refill",
+        "score", "first", "pieces", "refill", "lines", "hold_used", "parent",
     )
 
     def __init__(
@@ -119,6 +121,9 @@ class _Node:
         first: Decision,
         pieces: int,
         refill: bool = False,
+        lines: int = 0,
+        hold_used: bool = False,
+        parent: "_Node | None" = None,
     ):
         self.rows = rows
         self.hold = hold
@@ -130,6 +135,9 @@ class _Node:
         self.first = first
         self.pieces = pieces
         self.refill = refill
+        self.lines = lines
+        self.hold_used = hold_used
+        self.parent = parent
 
 
 def _hold_transitions(
@@ -198,6 +206,7 @@ class BeamAgent(BaseAgent):
         )
 
         children = self._expand(obs, root, stack)
+        children = self._score_children(obs, children)
         if not children:
             raise RuntimeError("no reachable placements for a live piece")
         wins = [c for c in children if c.dug >= obs.goal]
@@ -216,6 +225,7 @@ class BeamAgent(BaseAgent):
             nxt: list[_Node] = []
             for node in frontier:
                 nxt.extend(self._expand(obs, node, stack, first=node.first))
+            nxt = self._score_children(obs, nxt)
             if not nxt:
                 break
             for n in nxt:
@@ -234,6 +244,32 @@ class BeamAgent(BaseAgent):
             return min(wins, key=lambda n: (n.pieces, -n.score)).first
         return best.first
 
+    def _score_children(
+        self, obs: Obs, children: list[_Node]
+    ) -> list[_Node]:
+        """Post-process a ply's freshly expanded children (scores are
+        already set by ``_expand``; each child carries its ``parent``).
+        Hook for the value-guided beam (``valuebeam.ValueBeamAgent``),
+        which rescores every non-winning child with the learned
+        cost-to-go in one batched forward pass."""
+        return children
+
+    def _child_score(
+        self, obs: Obs, node: _Node, rows2: list[int], total_dug: int, pieces: int
+    ) -> float:
+        """A non-winning child's score: the linear eval of its board plus
+        digging progress credited along the plan. Hook for the
+        value-guided beam (``valuebeam.ValueBeamAgent``), which overrides
+        it with the learned cost-to-go — the base formula stays the
+        reference semantics."""
+        w = self.weights
+        return eval_board(rows2, w) + w.lines * total_dug
+
+    def _winner_score(self, pieces: int) -> float:
+        """A winning child's score: a win is a win, the shortest is best
+        (``win_decay`` per piece). Hook, as ``_child_score``."""
+        return self.weights.win - self.win_decay * pieces
+
     def _expand(
         self, obs: Obs, node: _Node, stack: int, first: Decision | None = None
     ) -> list[_Node]:
@@ -241,7 +277,6 @@ class BeamAgent(BaseAgent):
         is a refill leaf when the engine would top the cheese back up after
         its lock: a no-clear lock with cheese below target (the hole position
         of the new row is engine RNG — unknowable, so not plannable)."""
-        w = self.weights
         out = []
         for piece, hold_used, hold_after, can_hold_after, queue_after in _hold_transitions(node):
             for p in enumerate_placements(node.rows, piece, allow_180=obs.allow_180):
@@ -251,16 +286,16 @@ class BeamAgent(BaseAgent):
                 won = total_dug >= obs.goal
                 target = min(stack, obs.goal - total_dug)
                 refill = lines == 0 and target - on_board > 0
-                # credit digging progress along the plan so stopping depths
-                # are comparable; wins dominate by pieces, shortest first
-                score = eval_board(rows2, w) + w.lines * total_dug
-                if won:
-                    score = w.win - self.win_decay * (node.pieces + 1)
+                # wins dominate by pieces, shortest first
+                score = self._winner_score(node.pieces + 1) if won else self._child_score(
+                    obs, node, rows2, total_dug, node.pieces + 1
+                )
                 out.append(_Node(
                     rows2, hold_after, can_hold_after, queue_after,
                     total_dug, on_board,
                     score,
                     first if first is not None else Decision(p, hold=hold_used),
                     node.pieces + 1, refill,
+                    lines=lines, hold_used=hold_used, parent=node,
                 ))
         return out
