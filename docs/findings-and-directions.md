@@ -32,9 +32,18 @@ passes L1 and L2, stops honestly at L3 (student 5.00-5.70 vs teacher
 **structural imitation ceiling**: near-optimal L1/L2 play is reactive
 (visible in the current board), L3+ play needs the teacher's planning
 through hold and preview queue, which per-state cloning cannot express.
-The evidence, the reviews, and the encoding all converge on the same
-next direction: **a cost-to-go value network on afterstates, trained
-from and plugged into the corrected search — expert iteration**.
+The reviews', the encoding's, and the run evidence's converged
+direction — **a cost-to-go value network on afterstates trained from
+and plugged into the corrected search (expert iteration)** — was then
+built and run end-to-end (run V1, 2026-09-10): the pipeline works
+(twin-headed V, 5.4M-row collection, V-in-beam, locked manifest), the
+net **halves search runtime at equal strength and adds ~1.6 pieces of
+strength at equal beam budget** when blended with the linear eval —
+but single-visit MC labels calibrate *across boards* without
+discriminating *within* one board, so a pure-V beam still collapses
+between search horizons and the strict "V@10×3 ≥ linear@40×5"
+acceptance is not met. Round 2 is defined by measurement: multi-visit
+expected-cost-to-go labels, n-step bootstrapped targets, or both.
 
 ## 2. Directions taken, in order, and what each produced
 
@@ -227,6 +236,52 @@ regression) — but the gap stopped shrinking at ~1.3 pieces (36%).
 - Conclusion: **more distillation is not the next lever.** The value-
   network direction is.
 
+### 2.9 Value-network round 1 (run V1) — taken; the ceiling explained, the bar not yet met
+
+**Decision**: implement the reviews' convergence point end-to-end —
+`V(afterstate)` trained on Monte-Carlo cost-to-go labels from
+corrected-beam rollouts, plugged into the beam as the leaf evaluator
+(`tetris.ai.value`, `tetris.ai.valuebeam`, `examples/value_experiment.py`;
+commit cde4d9d + the `eval_blend` knob 5e5d104).
+
+**Findings** (5.4M candidate rows across L1/L3/L5/L10 plus a capped-1ply
+L10 failure source with 65% genuine failure labels; acceptance manifest
+on the locked 800M seed band):
+
+- **Label exactness holds at scale**: L1's 280k rows regress to mean
+  q = 1.0049 — the empirical optimum (1 + 1/105); the fail head reads
+  ~0 on clean roots and the calibration by level is near-true (root
+  means 0.97/3.75/8.28/25.41 vs true 1.01/~3.5/~8.3/~21.5+capped).
+- **The structural failure is within-board discrimination**: the
+  teacher's chosen move ranks ~16/26 by q̂ with a spread of ~2 pieces
+  across *all* candidates of one board — single-visit MC returns carry
+  almost no signal about *which* placement is better, only about *which
+  board* is better. Consequence, measured: a **pure-V beam collapses
+  when no win is inside the search horizon** (L10: 0% win, 11-piece
+  topout; L5: 1% win) — between wins the beam random-walks on noise.
+- **Blending the linear eval back in (blend .5) restores reliability**
+  everywhere (100% win at every level) and beats the pure-linear beam
+  *of the same size*: 26.87 vs 28.50 (10×3) and 24.17 vs 24.60 (20×4)
+  at L10 — the net adds ~1.6-1.8 pieces of strength at matched search
+  budget and halves the runtime of the 40×5 reference (4.82 vs 18.03
+  s/episode). At 5×2 linear still wins: too little search for the
+  calibration to pay.
+- **The strict acceptance fails**: beam 10×3+V (blend .5) does not
+  reach beam 40×5+linear (L10 25.89 vs 21.47; paired 17/70/13). The
+  net is a *same-budget amplifier*, not yet a *budget compressor*.
+
+**Conclusion**: round 1 established the pipeline (data, twin heads,
+V-in-beam, locked manifest, runtime measurement) and produced the
+diagnosis the reviews anticipated: single-visit MC labels calibrate
+but don't discriminate. Round 2's levers, in evidence order:
+(1) **multi-visit labels** — expected cost-to-go from k rollouts per
+state (the teacher's 20×4 replays of a state are cheap on the server);
+(2) **n-step bootstrapped targets** (review 2's rollout-cost cut, now
+a quality lever: pieces spent + V at the horizon);
+(3) deeper plies through the V-amplified beam (the blend's win at
+equal budget means V can *widen* effective depth, if discrimination
+improves).
+
 ## 3. Directions considered and rejected (with reasons)
 
 | direction | status | reason |
@@ -243,23 +298,28 @@ regression) — but the gap stopped shrinking at ~1.3 pieces (36%).
 
 ## 4. Open directions (ranked by evidence and convergence)
 
-1. **Cost-to-go value network on afterstates (expert iteration)** — the
-   convergence point of both reviews, the run-7b/8 diagnosis, and the
-   v7 encoding's design. Train `V(afterstate)` on remaining-pieces
-   labels from corrected-beam rollouts; use `V` as the beam's leaf
-   evaluator; iterate. Removes both the imitation ceiling (the search
-   can improve on `V`) and the label-arbitrariness problem (near-ties
-   get near-equal targets). Acceptance (review 2): beam-10×3+V ≥
-   beam-40×5+linear-eval on a locked manifest.
+1. **Value-network round 2: label granularity** — run V1 built the
+   expert-iteration pipeline and diagnosed the remaining gap: the
+   round-1 net (single-visit MC returns) calibrates across boards but
+   cannot discriminate within one board, so pure-V play collapses
+   between search horizons (L10: 0% win) and the blended V adds
+   strength only at equal beam budget (26.87 vs 28.50 at 10×3; 24.17
+   vs 24.60 at 20×4 — both V wins; runtime halved). Round 2 replaces
+   the labels: **multi-visit expected cost-to-go** (k teacher rollouts
+   per visited state — the beam replays states cheaply) and/or
+   **n-step bootstrapped targets** (pieces spent + V at the horizon,
+   review 2's original formulation). The acceptance bar stays: beam
+   10×3+V ≥ beam 40×5+linear on the locked 800M manifest.
 2. **Compiled movegen/eval + batched V-in-beam** — the compute
    enabler: review 2 measured 10-50× collection throughput available
    (numba or a Cobra adapter) and one-forward-pass-per-ply `V`
    batching. Without it, each expert-iteration round at 20×4 costs
-   ~20 s/episode/core.
+   ~20 s/episode/core. Round 1's V-in-beam already batches per ply.
 3. **Three seed manifests + non-inferiority gates** — the remaining
    statistical hygiene: train/development/locked-final manifests with
    saved per-seed files; pre-declared margins instead of
-   "difference below its own noise"; paired per-seed tests.
+   "difference below its own noise"; paired per-seed tests. (Round 1
+   already runs paired per-seed comparisons on a locked band.)
 4. **Stack-height curriculum axis** — decouple goal from board
    fullness (`cheese_rows` already exists; `_cheese_target`'s cap is
    what binds them — verify the Techmino-style rule against live

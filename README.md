@@ -436,6 +436,36 @@ unchanged (`--device cuda`), on the RTX Pro 6000 server.
   The remaining gap to the beam is scale (rounds, episodes, net size) —
   the RTX Pro 6000 workload.
 
+## AI value network (expert iteration, round 1)
+
+`tetris.ai.value` + `tetris.ai.valuebeam` — the reviews' convergence
+point, implemented: a twin-headed value net (softplus cost-to-go +
+sigmoid failure probability) on the v7 **afterstate candidate rows**,
+trained on 5.4M Monte-Carlo return labels from corrected-beam rollouts
+(every candidate of every visited decision), then plugged into the
+beam as its leaf evaluator — `ValueBeamAgent` scores each ply's
+children in one batched GPU forward and keeps the beam's engine-exact
+transitions, refill-exact leaves, and win-guarantee semantics intact.
+
+Measured (run V1, locked 800M manifest): the net calibrates across
+boards (root means track true level means) but single-visit MC labels
+give it almost no *within-board* discrimination — a pure-V beam
+random-walks between search horizons (L10: 0% win). Blending the
+linear eval back in (`eval_blend=.5`) restores reliability everywhere
+and **beats the pure-linear beam of the same size** (L10: 26.87 vs
+28.50 at 10×3; 24.17 vs 24.60 at 20×4) at half the 40×5 reference's
+runtime — but the strict "10×3+V ≥ 40×5+linear" acceptance bar is
+not met (L10: 25.9 vs 21.5). Round 2's levers, per the run-1
+diagnosis: multi-visit expected-cost-to-go labels and n-step
+bootstrapped targets. Checkpoints + the acceptance manifest:
+`models/value/`; runner: `examples/value_experiment.py`.
+
+```bash
+.venv/py.sh examples/value_experiment.py --stage collect --episodes 3000
+.venv/py.sh examples/value_experiment.py --stage train --hidden 256 --layers 3
+.venv/py.sh examples/value_experiment.py --stage eval
+```
+
 ## Project layout
 
 ```

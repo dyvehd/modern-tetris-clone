@@ -558,6 +558,31 @@ to-win estimated by a net on afterstates (failures tracked as a
 separate probability head, so efficiency cannot hide unreliability).
 Conceptual update: `Q(s,a) = 1 + E[V(next)]`, `V(goal) = 0`.
 
+**Cost-to-go / value network / `V(afterstate)`** — remaining-pieces-
+to-win estimated by a net on afterstates (failures tracked as a
+separate probability head, so efficiency cannot hide unreliability).
+Conceptual update: `Q(s,a) = 1 + E[V(next)]`, `V(goal) = 0`.
+Implemented (run V1, `tetris.ai.value`): twin-headed ValueNet on the
+v7 afterstate rows — softplus q-head (pieces-to-go) + sigmoid fail-
+head; labels are Monte-Carlo episode returns (every candidate of
+every visited decision, the played move at full weight).
+
+**Within-board vs across-board discrimination** — run V1's central
+diagnosis: single-visit MC returns teach the net *which board* is
+better (calibration — root means track true level means closely) but
+almost nothing about *which placement* is better within one board
+(the teacher's move ranks ~16/26 by q̂; spread ~2 pieces across all
+candidates). Consequence: a pure-V beam random-walks whenever no win
+is inside the search horizon. The `eval_blend` knob mixes the linear
+eval's within-board discrimination back in; .5 measured best.
+
+**`eval_blend`** — `ValueBeamAgent`'s mix: 0 = pure V, 1 = pure
+linear eval; intermediate values take V's cross-state calibration
+plus the linear eval's per-board shape signal. Measured (L10,
+30 seeds): blend .5 beats pure-linear at matched beam size (26.87 vs
+28.50 at 10×3; 24.17 vs 24.60 at 20×4) but pure-V (blend 0) tops
+out at 0% win — the reliability floor the blend exists to fix.
+
 **Bootstrapped (n-step) targets** — pieces spent + `V` at the search
 horizon (once `V` is decent) — a recommended rollout-cost cut.
 
