@@ -19,3 +19,8 @@ settings.toml
 # secrets — never commit credentials
 .env
 .env.*
+
+# built bot backends (bots/build_bots.sh regenerates them)
+bots/build/
+bots/fusion-shim/target/
+tmp

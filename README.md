@@ -32,7 +32,8 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[game,dev]"   # or: uv pip i
 ```
 
 Modes: **Marathon** (Guideline curve gravity, 150 lines), **Sprint 40 Lines**
-(0.02G), **Cheese 10 / 18 / 100 / ∞** (dig races, see below), **Zen**
+(0.02G), **Cheese 10 / 18 / 100 / ∞** (dig races, see below), **100L Cheese
+Trainer** (dig 100 lines at 0G with an AI beside you — see below), **Zen**
 (endless 0.02G, `Ctrl+Z` undo), **Zen 0G** (endless, no gravity — pieces
 stay where you move them; they only lock via lock delay against the stack or
 a hard drop), **VS Sandbox** (garbage trainer: sends 4 rows every 15 s). The
@@ -63,6 +64,44 @@ goals 10/18/100 plus endless). The stack is **9 rows like Jstris**; put
 height, `[rules] cheese_messiness = 50` to loosen/tighten the holes, and
 `[rules] cheese_refill_on_clear = true` for TETR.IO's instant refill
 (topped back up after every placement, clears included).
+
+### 100L cheese trainer (AI coaching mode)
+
+The same 100-line cheese race, **zero gravity, infinite SDF**, with a bot
+beside you. The AI answers every decision point with a *placement* — and
+navigation is always the repo's own movegen/pathfinder, so a hint is
+exactly what the bot's choice can actually reach in our engine (the same
+placement protocol every learner uses).
+
+- **AI shadows** — the bot's ranked placements drawn as corner-tick
+  outlines on the board (clearly not your piece's solid ghost). Rank 0 is
+  the top move; F7/F8 choose how many more (the "lookahead") fade behind
+  it. A dotted shadow means "hold first".
+- **Model picker** — F6 cycles the backend: `cheese-beam` (this repo's
+  corrected beam20x4, the cheese specialist — pure Python, always
+  available), `fusion` (MochBot, heuristic beam, no model file),
+  `cold-clear` (MinusKelvin's Cold Clear), `misamino` (the classic
+  MisaMino core) and `zetris` (MisaMino configured with Zetris's stock
+  style — the real Zetris core is a Windows C++/CLI DLL, so this is the
+  closest Linux port). The external engines are optional: their shared
+  libraries build with `bots/build_bots.sh` and a missing one simply
+  drops out of the picker.
+- **Automove** — F4 lets the bot play (its inputs replay one per frame
+  through the real engine, so you watch it navigate); F10/F9 set the
+  pace. **F5 = step mode**: the bot moves only when you press your
+  hard-drop key, one move per press.
+- **Live feedback** — F3. With shadows off (F2), every placement you make
+  is compared against the bot's: a differing placement is auto-undone
+  (the zen-undo machinery puts the piece back in your hands) so you take
+  it again.
+- **Chess-style annotation** — every placement is ranked among the bot's
+  scored candidates: best / good / inaccuracy / mistake / blunder labels
+  (a z-gap against the candidate spread, so the numbers are comparable
+  across bots), with running accuracy and top-move rate on the HUD.
+- The trainer's hotkeys (F1-F10) are printed on the pause screen; the AI
+  panel sits under the next queue. Thinking happens on a worker thread —
+  a hint may land a beat after a spawn (250 ms for the Python beam,
+  ~10 ms for the native engines).
 
 ### Zen sandbox editors (four-tris inspired)
 
@@ -102,7 +141,10 @@ directly editable with the mouse:
 | Rotate CW / CCW / 180 | ↑ or X / Z or Ctrl / A |
 | Hold | C or Shift |
 | Pause / restart / menu | Esc or P / R / Q |
-| Undo last action (Zen modes) | Ctrl + Z |
+| Undo last action (Zen modes, trainer) | Ctrl + Z |
+| AI trainer: AI / shadows / feedback | F1 / F2 / F3 (trainer mode) |
+| AI trainer: automove / step mode | F4 / F5 (trainer mode) |
+| AI trainer: model / lookahead / PPS | F6 / F7-F8 / F9-F10 (trainer mode) |
 | Paint / erase board cells (Zen modes) | left mouse / right or Shift+left |
 | Edit the piece queue (Zen modes) | left click the next preview |
 | Open settings | S (main menu) or S / O (pause) |
@@ -458,7 +500,14 @@ src/tetris/
     tuning.py      # cross-entropy weight tuning (rung-1 learning)
   input/           # DAS/ARR controller (no pygame)
   render/          # pygame-ce renderer
+  trainer/         # 100L cheese trainer: bot backends (ctypes), the
+                   # advisor worker thread, chess-style annotation, the
+                   # trainer state machine (shadows / automove / feedback)
   app.py           # 60 Hz fixed-timestep game loop, menus
+bots/             # native bot backends, built by bots/build_bots.sh from
+                   # the reference clones in tmp/ (MisaMino portable core,
+                   # the fusion shim crate; cold-clear uses its upstream
+                   # C API directly) — all optional at runtime
   config.py        # defaults + settings.toml override
 tests/             # 232 tests pinning all of the above
 ```

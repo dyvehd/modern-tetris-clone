@@ -131,14 +131,61 @@ class Renderer:
     # ----------------------------------------------------------------- frame
 
     def draw(self, game: Game, mode: str, paused: bool = False, undo_hint: bool = False,
-             edit: bool = False, hover=None) -> None:
+             edit: bool = False, hover=None, ai_shadows=None) -> None:
         self.screen.fill(BG)
         self.draw_field(game, hover=hover if edit else None)
+        if ai_shadows:
+            self.draw_ai_shadows(ai_shadows)
         self.draw_side_panels(game, bag_separators=edit)
         self.draw_stats(game, mode)
         self.draw_popups()
         if paused:
             self.draw_pause(undo_hint)
+
+    AI_HINT = (150, 200, 255)  # bot hints: cool blue-white, clearly not a piece
+
+    def draw_ai_shadows(self, shadows) -> None:
+        """Draw the bot's ranked placements as corner-tick outlines —
+        visually distinct from the active piece's solid ghost border.
+        Rank 0 (the bot's top move) is drawn at full strength, deeper
+        ranks fade toward the background."""
+        c = self.cell
+        fx, fy = self.field_x, self.field_y
+        for placement, rank, hold in shadows:
+            fade = max(0.18, 1.0 - 0.16 * rank)
+            color = tuple(int(v * fade) for v in self.AI_HINT)
+            for ry, cx in placement.cells:
+                px = fx + cx * c
+                py = fy + (ry - VISIBLE_TOP) * c
+                t = max(3, c // 5)  # corner tick length
+                m = 2
+                pts = (
+                    ((px + m, py + m + t), (px + m, py + m), (px + m + t, py + m)),
+                    ((px + c - m - t, py + m), (px + c - m, py + m), (px + c - m, py + m + t)),
+                    ((px + c - m, py + c - m - t), (px + c - m, py + c - m), (px + c - m - t, py + c - m)),
+                    ((px + m + t, py + c - m), (px + m, py + c - m), (px + m, py + c - m - t)),
+                )
+                for tri in pts:
+                    pygame.draw.polygon(self.screen, color, tri)
+            if hold and rank == 0:
+                # the hold flag on the top move: a small dot in each cell
+                for ry, cx in placement.cells:
+                    pygame.draw.circle(
+                        self.screen, color,
+                        (fx + cx * c + c // 2, fy + (ry - VISIBLE_TOP) * c + c // 2),
+                        max(2, c // 8),
+                    )
+
+    def draw_trainer_panel(self, rows: list[tuple[str, str]]) -> None:
+        """The AI trainer status panel (right side, under the next queue)."""
+        x = 700
+        y = self.field_y + 5 * int(round(3.04 * self.cell)) + 90
+        self.text("AI TRAINER", x, y, 16, self.AI_HINT, bold=True)
+        y += 26
+        for label, value in rows:
+            self.text(label, x, y, 13, TEXT_DIM, bold=True)
+            self.text(value, x + 110, y, 13, TEXT)
+            y += 20
 
     def cell_style(self, game: Game, ry: int, x: int):
         """Color of a locked cell from the engine's style grid."""

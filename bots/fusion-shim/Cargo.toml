@@ -1,0 +1,14 @@
+[package]
+name = "fusion-shim"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "fusion_shim"
+crate-type = ["cdylib"]
+
+[dependencies]
+fusion-engine = { path = "../../tmp/fusion" }
+
+[profile.release]
+opt-level = 3
