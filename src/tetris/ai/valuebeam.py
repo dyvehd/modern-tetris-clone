@@ -139,6 +139,7 @@ class ValueBeamAgent(BeamAgent):
         depth: int = 3,
         lam_q: float = 1.0,
         lam_f: float = 20.0,
+        eval_blend: float = 0.0,
         device: str = "cpu",
         name: str | None = None,
     ):
@@ -146,12 +147,23 @@ class ValueBeamAgent(BeamAgent):
         self.net = net.to(device).eval()
         self.lam_q = lam_q
         self.lam_f = lam_f
+        self.eval_blend = eval_blend
         self.device = device
         self.name = name or f"beam{width}x{depth}+V"
 
     def _score_children(self, obs: Obs, children: list[_Node]) -> list[_Node]:
         """Rescore every non-winning child with one batched net forward
-        over the ply's candidate rows."""
+        over the ply's candidate rows.
+
+        ``eval_blend`` mixes the linear eval back in: 0.0 = pure V
+        (expert iteration's target), 1.0 = pure linear. Intermediate
+        values keep V's cross-state calibration (which level, how deep
+        the hole) while restoring the linear eval's within-board
+        discrimination — the measured failure mode of a value net
+        trained on single-visit MC returns: its q spread within one
+        board is tiny relative to its across-board spread, so a pure-V
+        beam random-walks when no win is in the search horizon (L10:
+        0% win, topout in 11 pieces)."""
         todo = [c for c in children if c.dug < obs.goal]
         if not todo:
             return children
@@ -159,8 +171,13 @@ class ValueBeamAgent(BeamAgent):
         xt = torch.as_tensor(x, dtype=torch.float32, device=self.device)
         with torch.no_grad():
             q_hat, fail_hat = self.net(xt)
+        from .eval import eval_board
+
         for c, q, f in zip(todo, q_hat.tolist(), fail_hat.tolist()):
-            # pieces spent before this child's own placement + the net's
-            # total-from-this-lock estimate = the estimated plan total
-            c.score = -(c.pieces - 1 + self.lam_q * q + self.lam_f * f)
+            v_score = -(c.pieces - 1 + self.lam_q * q + self.lam_f * f)
+            if self.eval_blend > 0.0:
+                lin = eval_board(c.rows, self.weights) + self.weights.lines * c.dug
+                c.score = (1.0 - self.eval_blend) * v_score + self.eval_blend * lin
+            else:
+                c.score = v_score
         return children
