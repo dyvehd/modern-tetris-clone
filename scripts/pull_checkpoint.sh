@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Pull a checkpoint from the Molab notebook through the console, in
 # gzip+base85 chunks, verify md5, stage locally. Usage:
-#   ./pull_checkpoint.sh <name> <out_path>
+#   MOLAB_URL=... MOLAB_TOKEN=... ./pull_checkpoint.sh <name> <out_path>
+# URL/TOKEN are read from the environment (never hard-code a token here —
+# see the security note in docs/onboarding-guide.md).
 set -euo pipefail
-URL="https://sb-7c77a25b51dac13e.sb.molab.run/"
-TOKEN="c12ac38e41b91f91faffbefecb0a359f6396477783e545bd4a7b522dbba5dab4"
+URL="${MOLAB_URL:?set MOLAB_URL to the notebook base URL}"
+TOKEN="${MOLAB_TOKEN:?set MOLAB_TOKEN to the notebook auth token}"
 NAME="$1"; OUT="$2"
 EXEC="/home/dathuynh/.zcode/skills/marimo-pair/scripts/execute-code.sh"
 

@@ -15,3 +15,7 @@ settings.toml
 
 # local notes
 .local_note.txt
+
+# secrets — never commit credentials
+.env
+.env.*
