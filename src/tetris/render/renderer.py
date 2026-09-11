@@ -145,13 +145,14 @@ class Renderer:
     AI_HINT = (150, 200, 255)  # fallback tint for trainer chrome (panel header)
 
     def draw_ai_shadows(self, shadows) -> None:
-        """Draw the bot's ranked placements as corner-tick outlines.
+        """Draw the bot's plan as corner-tick outlines.
 
-        The outline is the piece's own color, faded by rank (rank 0, the
-        bot's top move, at full strength) — so a glance tells you which
-        piece the bot wants where. It stays visually distinct from the
-        player's ghost, which is a solid full-cell border rather than
-        four corner ticks.
+        Rank 0 is the placement the bot will actually play (drawn at
+        full strength); deeper ranks are its planned placements for the
+        coming pieces, faded by plan depth. Every shadow uses its own
+        piece's color, so a glance tells you which piece goes where. The
+        ticks stay visually distinct from the player's ghost, which is a
+        solid full-cell border.
         """
         c = self.cell
         fx, fy = self.field_x, self.field_y

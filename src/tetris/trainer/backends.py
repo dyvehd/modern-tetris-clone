@@ -38,7 +38,7 @@ O=3 S=4 T=5 Z=6); per-backend mapping lives inside each adapter.
 from __future__ import annotations
 
 import ctypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..engine.constants import PIECE_CELLS, PieceType
@@ -87,6 +87,48 @@ class BotAdvice:
         return (self.piece, self.hold, tuple(sorted(self.cells)))
 
 
+# ``candidates[0].key == advice.key`` MUST hold — rank 0 of the ranked list
+# is simultaneously the drawn "bot's move" shadow and the annotation's
+# "best" reference. A backend's own chooser (a deep search) can disagree
+# with a root-only rescore; when it does, the chosen move moves to rank 0
+# carrying the top score (the trainer always plays candidates[0]'s own
+# search choice through the advisor, they must point at the same cells).
+def pin_best(advice: BotAdvice | None) -> BotAdvice | None:
+    if advice is None or not advice.candidates:
+        return advice
+    cands = advice.candidates
+    key = (advice.piece, advice.hold, tuple(sorted(advice.cells)))
+    if (cands[0].piece, cands[0].hold, tuple(sorted(cands[0].cells))) == key:
+        return advice
+    idx = next(
+        (i for i, c in enumerate(cands)
+         if (c.piece, c.hold, tuple(sorted(c.cells))) == key),
+        None,
+    )
+    if idx is None:
+        return advice
+    match = cands[idx]
+    lifted = replace(
+        match, score=max(cands[0].score, match.score)  # keeps the z-scale honest
+    )
+    rest = [c for i, c in enumerate(cands) if i != idx]
+    return replace(advice, candidates=(lifted, *rest))
+
+
+@dataclass(frozen=True)
+class PlanStep:
+    """One placement of the bot's multi-move plan (decision point k of
+    the simulated future). Rank-0 steps restate a :class:`BotAdvice`."""
+
+    piece: PieceType
+    cells: tuple[tuple[int, int], ...]
+    hold: bool = False
+
+    @property
+    def key(self) -> tuple[PieceType, bool, tuple[tuple[int, int], ...]]:
+        return (self.piece, self.hold, tuple(sorted(self.cells)))
+
+
 class Backend:
     """A bot backend. ``name`` is what the model picker shows. All state
     seeding/reset is backend-specific; the common contract is just
@@ -96,6 +138,12 @@ class Backend:
 
     def think(self, game: Game) -> BotAdvice | None:
         raise NotImplementedError
+
+    def plan_steps(self, advice: BotAdvice | None) -> list[PlanStep] | None:
+        """A backend's own multi-move plan, when it computes one, as a
+        best-first :class:`PlanStep` list. ``None`` means "not available —
+        generate a plan by re-thinking successive states"."""
+        return None
 
     def reset(self) -> None:
         """Drop per-game state (a restart or an undo invalidates it)."""
@@ -603,6 +651,17 @@ class ColdClearBackend(Backend):
             candidates=tuple(cands),
             think_ms=think_ms,
         )
+
+    def plan_steps(self, advice: BotAdvice | None) -> list[PlanStep] | None:
+        """Cold Clear answers with a real move PLAN: the chosen move plus
+        the placements it intends for the following pieces. Free one-sim
+        lookahead — deeper ranks are literally the plan, not a rescore."""
+        if advice is None or not advice.candidates:
+            return None
+        return [
+            PlanStep(piece=c.piece, cells=tuple(sorted(c.cells)), hold=c.hold)
+            for c in advice.candidates
+        ]
 
 
 # --- fusion (bots/fusion-shim, ctypes) ----------------------------------------

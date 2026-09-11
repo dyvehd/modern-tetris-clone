@@ -30,8 +30,10 @@ from tetris.trainer.annotation import AccuracyStats, annotate
 from tetris.trainer.backends import (
     BotAdvice,
     BotCandidate,
+    PlanStep,
     make_backend,
     available_backends,
+    pin_best,
 )
 from tetris.trainer.trainer import Trainer, TrainerConfig
 
@@ -160,7 +162,128 @@ class TestAdvisor:
             adv.close()
 
 
+class TestPlanLookahead:
+    """Lookahead = the bot's PLAN depth: rank 0 is the placement it will
+    play; deeper ranks are its intended placements for the coming pieces
+    (simulated through the real engine between thinking steps)."""
+
+    def _planned(self, depth: int, timeout: float = 60.0):
+        be = make_backend("cheese-beam")
+        adv = Advisor(be)
+        g = trainer_game()
+        tok = piece_token(g)
+        adv.request(g, depth)
+        deadline = time.time() + timeout
+        while time.time() < deadline and (
+            adv.advice_for(tok) is None or len(adv.plan_for(tok)) < depth
+        ):
+            time.sleep(0.02)
+        return adv, g, tok
+
+    def test_plan_covers_requested_depth(self):
+        adv, g, tok = self._planned(3)
+        try:
+            advice = adv.advice_for(tok)
+            plan = adv.plan_for(tok)
+            assert advice is not None
+            assert len(plan) >= 2, f"plan too short for depth 3: {plan}"
+            # step 0 is what the bot plays (same placement the automove uses)
+            assert plan[0].key == advice.key
+            for step in plan:
+                assert len(set(step.cells)) == 4
+                assert all(0 <= r <= 39 and 0 <= c <= 9 for r, c in step.cells)
+            # the plan is about FUTURE pieces: beyond step 0, each step's
+            # piece must be one of the bot's remaining sources (the queue
+            # or a hold-out hold)
+            sources = set(g.queue[:7])
+            if g.hold_type is not None:
+                sources = sources | {g.hold_type}
+            for step in plan[1:]:
+                assert step.piece in sources, (
+                    f"plan step piece {step.piece} is not a future piece"
+                )
+        finally:
+            adv.close()
+
+    def test_trainer_shadows_are_plan_steps(self):
+        from tetris.trainer.trainer import PlannedPlacement
+
+        tr = Trainer(TrainerConfig(lookahead=2))
+        g = trainer_game()
+        try:
+            deadline = time.time() + 90
+            token = piece_token(g)
+            while time.time() < deadline:
+                tr.tick(g, list(g.events))
+                advice = tr.advisor.advice_for(token)
+                if advice is not None and len(tr.advisor.plan_for(token)) >= 2:
+                    break
+                time.sleep(0.02)
+            tr.last_advice = tr.advisor.advice_for(token)
+            tr._token = token
+            shadows = tr.shadow_placements(g)
+            assert shadows, "no shadows"
+            assert shadows[0][1] == 0
+            assert set(shadows[0][0].cells) == set(tr.last_advice.cells)
+            # deeper ranks are FUTURE placement steps (plan semantics), not
+            # alternatives of the active piece
+            for shape, rank, hold in shadows[1:]:
+                assert rank >= 1
+                assert isinstance(shape, PlannedPlacement)
+                assert hold is False
+        finally:
+            tr.close()
+
+
 # ------------------------------------------------------------------ backends
+
+
+class TestPinBest:
+    """Regression: a backend's ranked candidates can disagree with its own
+    chooser (root rescore vs deep search) — the shadow engine and the
+    annotation both assume candidates[0] IS the move that gets played."""
+
+    def test_chosen_move_lifted_to_rank0(self):
+        advice = _advice([30.0, 20.0, 10.0], top=2)
+        pinned = pin_best(advice)
+        top = pinned.candidates[0]
+        assert (top.piece, top.hold, tuple(sorted(top.cells))) == advice.key
+        assert top.score == 30.0  # lifted to the previous top's score
+        assert len(pinned.candidates) == 3
+        assert pinned.piece == advice.piece
+
+    def test_noop_when_rank0_already_matches(self):
+        advice = _advice([30.0, 20.0, 10.0], top=0)
+        assert pin_best(advice) is advice
+
+    def test_chosen_move_outside_candidates_stays_unpinned(self):
+        advice = _advice([30.0, 20.0], top=0, piece=PieceType.I)
+        ghost = BotAdvice(piece=PieceType.T, hold=False, cells=advice.cells,
+                          candidates=advice.candidates)
+        assert pin_best(ghost).candidates == advice.candidates
+
+    def test_annotation_sees_played_move_as_best(self):
+        advice = pin_best(_advice([30.0, 20.0, 10.0], top=1))
+        q = annotate(advice, advice.cells, False)
+        assert q is not None
+        assert q.rank == 0
+        assert q.label == ann.LABEL_BEST
+
+
+def test_cold_clear_plan_steps_are_free_lookahead():
+    if not _native_available("cold-clear"):
+        pytest.skip("cold-clear library not built (bots/build_bots.sh)")
+    g = trainer_game()
+    be = make_backend("cold-clear")
+    try:
+        advice = be.think(g)
+        steps = be.plan_steps(advice)
+        assert advice is not None and steps is not None and steps
+        # step 0 IS the chosen move; deeper steps (when its search has
+        # them) are free plan lookahead for the advisor
+        assert steps[0].key == advice.key
+    finally:
+        be.close()
 
 
 NATIVE_BACKENDS = ["misamino", "fusion", "cold-clear", "zetris"]
@@ -501,6 +624,71 @@ class TestTrainerKeybinds:
             assert cfg.live_feedback is not before[2]  # F3
             assert cfg.automove is not before[0]       # F4
             assert cfg.step_mode is not before[1]      # F5
+        finally:
+            tr.close()
+
+
+class TestStepModePlaysTheTopShadow:
+    """Regression (user report): the drawn shadow must be exactly the
+    placement step mode plays — played opposite placements were possible
+    whenever a backend's ranked list disagreed with its own chooser."""
+
+    def test_step_lock_matches_rank0_shadow(self):
+        from tetris.app import App
+        from tetris.config import AppConfig, DebugConfig
+
+        app = App(AppConfig(debug=DebugConfig(log_input=False)))
+        app.mode_idx = app.modes.index("100L Cheese Trainer")
+        app.start_game()
+        tr = app.ai_trainer
+        assert tr is not None
+        try:
+            tr.cfg.automove = True
+            tr.cfg.step_mode = True
+            tr.cfg.lookahead = 2
+            done = tried = 0
+            session = time.time() + 240
+            while time.time() < session and tried < 6 and done < 2:
+                # wait for advice + a plan for the CURRENT decision point
+                d = time.time() + 60
+                while time.time() < d:
+                    app.logic_tick()
+                    tok = piece_token(app.game)
+                    if (tok and tr.last_advice is not None
+                            and len(tr.advisor.plan_for(tok)) >= 2):
+                        break
+                    time.sleep(1 / 240)
+                tok = piece_token(app.game)
+                if not (tr.last_advice is not None and tr.advisor.plan_for(tok)):
+                    break
+                shadows = tr.shadow_placements(app.game)
+                if not shadows:
+                    break
+                aim = shadows[0][0]
+                advice = tr.last_advice
+                if advice.hold:
+                    brings = (app.game.hold_type
+                              if app.game.hold_type is not None
+                              else app.game.queue[0])
+                    if brings is not advice.piece:
+                        tried += 1
+                        continue  # hold advice our movement model can't play
+                start = app.game.pieces_placed
+                tr.request_step()
+                d = time.time() + 20
+                lock: list[dict] = []
+                while time.time() < d:
+                    app.logic_tick()
+                    if app.game.pieces_placed > start:
+                        lock = [e for e in app.game.events if e.get("kind") == "lock"]
+                        break
+                    time.sleep(1 / 240)
+                assert lock, "step request did not place a piece"
+                assert set(lock[-1]["cells"]) == set(aim.cells), (
+                    "the bot played a placement other than the top shadow"
+                )
+                done += 1
+            assert done >= 2, f"only {done} verified drops"
         finally:
             tr.close()
 

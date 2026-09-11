@@ -73,10 +73,14 @@ navigation is always the repo's own movegen/pathfinder, so a hint is
 exactly what the bot's choice can actually reach in our engine (the same
 placement protocol every learner uses).
 
-- **AI shadows** — the bot's ranked placements drawn as corner-tick
-  outlines on the board (clearly not your piece's solid ghost). Rank 0 is
-  the top move; F7/F8 choose how many more (the "lookahead") fade behind
-  it. A dotted shadow means "hold first".
+- **AI shadows** — the bot's PLAN drawn as corner-tick outlines on the
+  board (clearly not your piece's solid ghost), each shadow in its own
+  piece's color. Rank 0 is the move that gets played (the same placement
+  the bot plays in step mode); deeper ranks (F7/F8 choose how many, the
+  "lookahead") are its planned placements for the NEXT pieces — simulated
+  through the real engine, so with lookahead 2 a rank-2 shadow belongs to
+  the piece two placements from now, never an alternative spot for the
+  current one. A dotted shadow means "hold first".
 - **Model picker** — F6 cycles the backend: `cheese-beam` (this repo's
   corrected beam20x4, the cheese specialist — pure Python, always
   available), `fusion` (MochBot, heuristic beam, no model file),

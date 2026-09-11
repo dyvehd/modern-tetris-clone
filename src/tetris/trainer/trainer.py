@@ -6,10 +6,11 @@ thread, after ``game.tick``. The heavy lifting (bot thinking) lives on the
 advisor thread — this module only consumes completed advice.
 
 Features:
-- **AI shadows** — the bot's ranked placements drawn as ghost outlines on
-  the board: the top move full-strength, the following ``lookahead``
-  candidates fading by rank. Visually distinct from the player's own
-  ghost (corner-tick outlines vs the solid border).
+- **AI shadows** — the bot's PLAN drawn as outlines on the board: the
+  move it will actually play at full strength, then (``lookahead``
+  deep) the placements it plans for the NEXT pieces, fading by plan
+  depth. Each shadow is drawn in its own piece's color, corner-tick
+  outlines vs the solid border of the player's ghost.
 - **automove** — the bot plays: paced at a fixed PPS, or one move per
   hard-drop key press ("step mode"). Moves are ANIMATED — the path's
   inputs replay one per tick through the real engine, so you watch the
@@ -33,7 +34,7 @@ from ..engine.constants import PieceType
 from ..engine.game import Action, Game
 from .advisor import Advisor, piece_token
 from .annotation import AccuracyStats, MoveQuality, annotate
-from .backends import BotAdvice, make_backend
+from .backends import BotAdvice, PlanStep, make_backend
 
 
 # app keybind name -> config attribute (see App._trainer_key)
@@ -46,6 +47,16 @@ _TOGGLE_ATTR = {
 }
 
 
+@dataclass(frozen=True)
+class PlannedPlacement:
+    """A future step of the bot's plan, drawn on the CURRENT board (the
+    placement really happens on the successor board — it is a hint only,
+    and does not know the cells earlier plan steps will fill)."""
+
+    piece: PieceType
+    cells: tuple[tuple[int, int], ...]
+
+
 @dataclass
 class TrainerConfig:
     """User-facing knobs, all changeable live (see the app's keybinds)."""
@@ -53,7 +64,7 @@ class TrainerConfig:
     backend: str = "cheese-beam"
     ai_on: bool = True
     shadows_on: bool = True
-    lookahead: int = 3  # extra ranked placements drawn after the top move
+    lookahead: int = 1  # future placements of the bot's PLAN drawn as shadows
     live_feedback: bool = False
     automove: bool = False
     automove_pps: float = 2.0
@@ -161,17 +172,20 @@ class Trainer:
             elif ev.get("kind") == "hold":
                 self._player_held = True
 
-        # 2. keep advice fresh for the current decision point
+        # 2. keep advice (and the plan) fresh for the current decision point
         token = piece_token(game)
         if token:
             if token != self._token:
                 self._token = token
                 self.last_advice = None
-                self.advisor.request(game)
+                self.advisor.request(game, self._wanted_plan_depth())
             elif self.last_advice is None:
                 fresh = self.advisor.advice_for(token)
                 if fresh is not None:
                     self.last_advice = fresh
+            else:
+                # lookahead may have grown live (F8): ask for deeper plan
+                self.advisor.request(game, self._wanted_plan_depth())
 
         # 3. late advice for a pending lock (the bot answered after the
         # player had already dropped)
@@ -288,46 +302,51 @@ class Trainer:
 
     # --------------------------------------------------------------- shadows
 
-    def shadow_placements(self, game: Game) -> list[tuple[Placement, int, bool]]:
-        """The renderer's shadow list: ``(placement, rank, hold)``.
+    def _wanted_plan_depth(self) -> int:
+        """Plan depth to request: 1 extra for the current move itself."""
+        extra = max(0, self.cfg.lookahead) if (self.cfg.ai_on and self.cfg.shadows_on) else 0
+        return 1 + extra
 
-        Rank 0 is the bot's top move (full-strength outline), rank
-        1..lookahead the next ranked candidates (fading by rank). Every
-        shadow is a real :class:`Placement` from OUR movegen — what you
-        see is a placement the bot's choice navigates to in our movement
-        model. The list is empty unless advice for the CURRENT decision
-        point is ready."""
+    def shadow_placements(self, game: Game) -> list[tuple[object, int, bool]]:
+        """The renderer's shadow list: ``(shape, rank, hold)`` where each
+        shape has ``piece`` and ``cells`` (a real :class:`Placement` for
+        rank 0, :class:`PlannedPlacement` for deeper plan steps).
+
+        The shadows are the bot's PLAN: rank 0 is the placement the bot
+        will actually play (the same cells advice/automove use), rank k
+        the placement it plans k placements later (for the piece that
+        comes k pieces later). Rank 0 is a placement of our movegen for
+        the active piece; deeper ranks are absolute cell sets on the
+        current board — hints of where the plan's NEXT pieces go, drawn
+        without the (unknown) interference of earlier plan steps. Empty
+        unless advice for the CURRENT decision point is ready."""
         if not self.cfg.ai_on or not self.cfg.shadows_on:
             return []
         if game.active is None or game.over or self.last_advice is None:
             return []
-        if piece_token(game) != self._token:
+        token = piece_token(game)
+        if token != self._token:
             return []
         advice = self.last_advice
-        # the piece each candidate places (hold-consistent with the engine)
-        can_hold = game.cfg.hold_enabled and game.can_hold
-        brings = None
-        if can_hold:
-            brings = game.hold_type if game.hold_type is not None else (
-                game.queue[0] if game.queue else None
-            )
-        out: list[tuple[Placement, int, bool]] = []
+        steps = self.advisor.plan_for(token)
+        top = PlanStep(advice.piece, tuple(sorted(advice.cells)), advice.hold)
+        if not steps or steps[0].key != top.key:
+            # plan not ready yet (or fell back): the bot's move is still the
+            # first shadow — never an alternative posing as it
+            steps = [top, *steps[0 : 1 + max(0, self.cfg.lookahead)]]
+        out: list[tuple[object, int, bool]] = []
         seen: set = set()
         limit = 1 + max(0, self.cfg.lookahead)
-        for rank, cand in enumerate(advice.candidates[:limit]):
-            piece = cand.piece
-            hold = cand.hold
-            if hold:
-                if not can_hold or brings is not cand.piece:
-                    continue
-            elif game.active.type is not cand.piece:
-                continue
-            placements = enumerate_placements(list(game.rows), piece)
-            p = next((pl for pl in placements if set(pl.cells) == set(cand.cells)), None)
-            if p is None or p.key in seen:
-                continue
-            seen.add(p.key)
-            out.append((p, rank, hold))
+        for rank, step in enumerate(steps[:limit]):
+            if rank == 0:
+                placements = enumerate_placements(list(game.rows), step.piece)
+                p = next((pl for pl in placements if set(pl.cells) == set(step.cells)), None)
+                if p is None:
+                    continue  # unreachable in our movement model
+                seen.add(p.key)
+                out.append((p, rank, step.hold))
+            else:
+                out.append((PlannedPlacement(step.piece, tuple(sorted(step.cells))), rank, False))
         return out
 
     # ------------------------------------------------------------------ HUD
