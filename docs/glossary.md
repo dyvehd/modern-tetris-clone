@@ -557,11 +557,6 @@ can improve on `V`.
 to-win estimated by a net on afterstates (failures tracked as a
 separate probability head, so efficiency cannot hide unreliability).
 Conceptual update: `Q(s,a) = 1 + E[V(next)]`, `V(goal) = 0`.
-
-**Cost-to-go / value network / `V(afterstate)`** — remaining-pieces-
-to-win estimated by a net on afterstates (failures tracked as a
-separate probability head, so efficiency cannot hide unreliability).
-Conceptual update: `Q(s,a) = 1 + E[V(next)]`, `V(goal) = 0`.
 Implemented (run V1, `tetris.ai.value`): twin-headed ValueNet on the
 v7 afterstate rows — softplus q-head (pieces-to-go) + sigmoid fail-
 head; labels are Monte-Carlo episode returns (every candidate of
