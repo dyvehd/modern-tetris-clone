@@ -1,0 +1,15 @@
+[package]
+name = "blockfish-shim"
+version = "0.1.0"
+edition = "2018"
+
+[lib]
+name = "blockfish_shim"
+crate-type = ["cdylib"]
+
+[dependencies]
+blockfish = { path = "../../tmp/blockfish/blockfish-engine", default-features = false, features = ["gen-shtb"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = 3

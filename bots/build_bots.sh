@@ -66,4 +66,12 @@ if [ -d "$fu" ] && [ -x "$CARGO" ]; then
     echo "built libfusion_shim.so"
 fi
 
+# --- blockfish (iitalics): shim crate over the engine ------------------------
+bf=$root/tmp/blockfish
+if [ -d "$bf/blockfish-engine" ] && [ -x "$CARGO" ]; then
+    (cd "$root/bots/blockfish-shim" && "$CARGO" build --release)
+    cp "$root/bots/blockfish-shim/target/release/libblockfish_shim.so" "$build/"
+    echo "built libblockfish_shim.so"
+fi
+
 ls -la "$build"

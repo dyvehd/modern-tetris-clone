@@ -85,9 +85,14 @@ placement protocol every learner uses).
   corrected beam20x4, the cheese specialist — pure Python, always
   available), `fusion` (MochBot, heuristic beam, no model file),
   `cold-clear` (MinusKelvin's Cold Clear), `misamino` (the classic
-  MisaMino core) and `zetris` (MisaMino configured with Zetris's stock
+  MisaMino core), `zetris` (MisaMino configured with Zetris's stock
   style — the real Zetris core is a Windows C++/CLI DLL, so this is the
-  closest Linux port). The external engines are optional: their shared
+  closest Linux port) and `blockfish` (iitalics/mystery's dedicated
+  cheese-race B* bot — its lineage holds the least-pieces 100L cheese
+  records; adapted through `bots/blockfish-shim`, which recovers
+  placements by replaying the engine's own finesse move sequences, and
+  reports ranked candidates only since its search stops at the first
+  line clear). The external engines are optional: their shared
   libraries build with `bots/build_bots.sh` and a missing one simply
   drops out of the picker.
 - **Automove** — F4 lets the bot play (its inputs replay one per frame
@@ -510,8 +515,9 @@ src/tetris/
   app.py           # 60 Hz fixed-timestep game loop, menus
 bots/             # native bot backends, built by bots/build_bots.sh from
                    # the reference clones in tmp/ (MisaMino portable core,
-                   # the fusion shim crate; cold-clear uses its upstream
-                   # C API directly) — all optional at runtime
+                   # the fusion and blockfish shim crates; cold-clear
+                   # uses its upstream C API directly) — all optional at
+                   # runtime
   config.py        # defaults + settings.toml override
 tests/             # 232 tests pinning all of the above
 ```

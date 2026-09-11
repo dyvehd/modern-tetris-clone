@@ -286,7 +286,7 @@ def test_cold_clear_plan_steps_are_free_lookahead():
         be.close()
 
 
-NATIVE_BACKENDS = ["misamino", "fusion", "cold-clear", "zetris"]
+NATIVE_BACKENDS = ["misamino", "fusion", "cold-clear", "zetris", "blockfish"]
 
 
 def _native_available(name: str) -> bool:
@@ -345,6 +345,71 @@ def test_registry_lists_built_backends():
     assert "cheese-beam" in names  # pure Python: always available
     for n in names:
         assert n in ("cheese-beam", *NATIVE_BACKENDS)
+
+
+def test_blockfish_advises_after_player_hold():
+    """The HOLD state contract: our engine hides the active piece on a hold
+    (hold slot occupied, hold locked for the new active) — blockfish must
+    still advise, about the piece actually in play, without asking for a
+    second hold (regression: shim fed blockfish the wrong queue and the
+    backend hid the occupied hold slot)."""
+    if not _native_available("blockfish"):
+        pytest.skip("blockfish library not built (bots/build_bots.sh)")
+    be = make_backend("blockfish")
+    try:
+        g = trainer_game()
+        be.think(g)  # any pre-state; ensure hold slot known-good
+        g2 = trainer_game()
+        g2.tick([Action.HOLD])
+        assert g2.can_hold is False
+        assert g2.hold_type is not None
+        advice = pin_best(be.think(g2))
+        assert advice is not None, "no advice after player hold"
+        assert advice.hold is False, "blockfish asked for a locked hold"
+        assert advice.piece is g2.active.type, (
+            f"advice about {advice.piece.name}, active is {g2.active.type.name}"
+        )
+        placements = enumerate_placements(list(g2.rows), advice.piece)
+        assert any(set(p.cells) == set(advice.cells) for p in placements)
+    finally:
+        be.close()
+
+
+def test_blockfish_advice_survives_midgame_hold():
+    """Multi-decision contract: advice keeps arriving once the hold slot is
+    occupied (regression: the shim's replay queue diverged from
+    blockfish's state after the first hold, killing every later answer)."""
+    if not _native_available("blockfish"):
+        pytest.skip("blockfish library not built (bots/build_bots.sh)")
+    be = make_backend("blockfish")
+    try:
+        g = trainer_game(seed=1234)
+        held_once = False
+        for _ in range(12):
+            if g.active is None or g.over:
+                break
+            advice = pin_best(be.think(g))
+            assert advice is not None, "advice died midgame"
+            placements = enumerate_placements(list(g.rows), advice.piece)
+            p = next(
+                (p for p in placements if set(p.cells) == set(advice.cells)),
+                None,
+            )
+            assert p is not None, f"unreachable placement {advice.cells}"
+            # exercise both branches: force one hold along the way
+            if not held_once and advice.hold:
+                held_once = True
+                g.tick([Action.HOLD])
+            p = next(
+                (p for p in enumerate_placements(list(g.rows), advice.piece)
+                 if set(p.cells) == set(advice.cells)),
+            )
+            g.active.rot, g.active.x, g.active.y = p.rot, p.x, p.y
+            g.tick([Action.HARD_DROP])
+            g.tick()
+        assert held_once, "seed never exercised the hold branch"
+    finally:
+        be.close()
 
 
 # ------------------------------------------------------------------ trainer

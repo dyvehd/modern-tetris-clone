@@ -23,4 +23,5 @@ settings.toml
 # built bot backends (bots/build_bots.sh regenerates them)
 bots/build/
 bots/fusion-shim/target/
+bots/blockfish-shim/target/
 tmp

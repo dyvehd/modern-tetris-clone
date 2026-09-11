@@ -28,6 +28,15 @@ the model picker):
 - ``cold-clear``  — MinusKelvin's Cold Clear (Rust) through its upstream
   C API (async bot thread, placement plan). Strongest general-purpose
   player of the set.
+- ``blockfish``   — iitalics/mystery's blockfish (github.com/blockfish/
+  blockfish), through the ``bots/blockfish-shim`` cdylib. The dedicated
+  CHEESE RACE bot: a B* search guided by a downstack eval optimized for
+  digging with the fewest pieces (its lineage holds the least-pieces
+  100L cheese records). It answers with ranked candidates only — its
+  search stops at the first line clear, so its native multi-placement
+  trace never models the cheese refill between placements; deeper plan
+  shadows come from the advisor re-thinking successor states (the
+  default plan path), never from the trace.
 - ``fusion``      — the MochBot/fusion engine (Rust) heuristic beam via
   the ``bots/fusion-shim`` C ABI (no ONNX model required).
 
@@ -784,6 +793,171 @@ class FusionBackend(Backend):
         )
 
 
+# --- blockfish (upstream engine via bots/blockfish-shim, ctypes) --------------
+
+# blockfish pieces cross the ABI as SRS color chars 'I','J','L','O','S','T','Z'
+# (string index == our PieceType value)
+BF_CHARS = "IJLOSTZ"
+_TO_BF: dict[PieceType, int] = {
+    PieceType.I: ord("I"),
+    PieceType.J: ord("J"),
+    PieceType.L: ord("L"),
+    PieceType.O: ord("O"),
+    PieceType.S: ord("S"),
+    PieceType.T: ord("T"),
+    PieceType.Z: ord("Z"),
+}
+
+
+class _BFCandidate(ctypes.Structure):
+    _fields_ = [
+        ("hold", ctypes.c_int),
+        ("piece", ctypes.c_ubyte),
+        ("cells_r", ctypes.c_int * 4),
+        ("cells_c", ctypes.c_int * 4),
+        ("rating", ctypes.c_int64),
+        ("n_plan", ctypes.c_int),
+        ("plan_piece", ctypes.c_ubyte * 8),
+        ("plan_hold", ctypes.c_int * 8),
+        ("plan_r", (ctypes.c_int * 4) * 8),
+        ("plan_c", (ctypes.c_int * 4) * 8),
+        ("n_inputs", ctypes.c_int),
+        ("inputs", ctypes.c_ubyte * 256),
+    ]
+
+
+class _BFResult(ctypes.Structure):
+    _fields_ = [
+        ("ok", ctypes.c_int),
+        ("n_cand", ctypes.c_int),
+        ("nodes", ctypes.c_uint64),
+        ("iterations", ctypes.c_uint64),
+        ("millis", ctypes.c_uint64),
+    ]
+
+
+class BlockfishBackend(Backend):
+    """blockfish (github.com/blockfish/blockfish), the dedicated cheese-race
+    bot — a B* search over its downstack eval driven by a piece-estimate
+    landscape (row_factor/piece_estimate/i_dependency/piece_penalty). It
+    holds the least-pieces 100L cheese world record lineage.
+
+    The engine ships without a public C API, so the shim
+    (bots/blockfish-shim) runs an analysis on our calling thread — the
+    advisor thread serializes calls anyway — and replays each suggestion's
+    FINESSE INPUTS through the engine's own movement/kick rules to recover
+    absolute lock cells. Because its search stops at the first line clear
+    (`reached_goal`), root traces are single-ply: this backend reports the
+    full ranked candidate list, and the advisor gains deeper plan shadows
+    by re-thinking successor states (the default plan path)."""
+
+    name = "blockfish"
+    _MAX_CANDS = 64
+
+    def __init__(self, search_limit: int = 50_000) -> None:
+        lib_path = BUILD_DIR / "libblockfish_shim.so"
+        if not lib_path.exists():
+            raise FileNotFoundError(
+                f"libblockfish_shim.so not built — run bots/build_bots.sh ({lib_path})"
+            )
+        self._lib = ctypes.CDLL(str(lib_path))
+        self._lib.bf_version.restype = ctypes.c_int
+        if self._lib.bf_version() != 2:
+            raise RuntimeError("unexpected libblockfish_shim ABI version")
+        self._lib.bf_think.restype = ctypes.c_int
+        self._lib.bf_think.argtypes = [
+            ctypes.POINTER(ctypes.c_ushort),
+            ctypes.c_ubyte,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_ubyte),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.POINTER(_BFResult),
+            ctypes.POINTER(_BFCandidate),
+            ctypes.c_int,
+        ]
+        self._limit = search_limit
+
+    @staticmethod
+    def _piece_of(ch: int) -> PieceType | None:
+        if not 0 < ch < 128 or chr(ch) == "\x00":
+            return None
+        try:
+            return PieceType(BF_CHARS.index(chr(ch)))
+        except ValueError:
+            return None
+
+    def think(self, game: Game) -> BotAdvice | None:
+        if game.active is None or game.over:
+            return None
+        import time
+
+        rows = (ctypes.c_ushort * 40)(*game.rows)
+        # blockfish's Snapshot protocol has no separate active piece: its
+        # queue is [active] + previews (same convention as Cold Clear)
+        queue = [game.active.type, *game.queue[:5]]
+        queue_ch = (ctypes.c_ubyte * max(1, len(queue)))(*[_TO_BF[p] for p in queue])
+        # hold crosses as its TRUE slot contents whenever the engine has the
+        # feature — blockfish needs the piece to model future swaps, even
+        # while hold is locked for the active piece; candidates that hold
+        # while locked are dropped in the shim
+        hold_ch = (
+            _TO_BF[game.hold_type]
+            if (game.cfg.hold_enabled and game.hold_type is not None)
+            else 0
+        )
+        out = _BFResult()
+        cands = (_BFCandidate * self._MAX_CANDS)()
+        t0 = time.perf_counter()
+        ok = self._lib.bf_think(
+            rows,
+            hold_ch,
+            1 if game.cfg.hold_enabled else 0,
+            1 if (game.cfg.hold_enabled and game.can_hold) else 0,
+            len(queue),
+            queue_ch,
+            self._limit,
+            6,
+            ctypes.byref(out),
+            cands,
+            self._MAX_CANDS,
+        )
+        think_ms = (time.perf_counter() - t0) * 1000.0
+        if not ok or not out.ok:
+            return None
+
+        cands_out = []
+        for i in range(out.n_cand):
+            c = cands[i]
+            piece = self._piece_of(c.piece)
+            if piece is None:
+                continue
+            cells = tuple(sorted(zip(c.cells_r, c.cells_c)))
+            if len(cells) != 4 or any(not (0 <= r < 40 and 0 <= col < 10) for r, col in cells):
+                continue
+            cands_out.append(
+                BotCandidate(
+                    piece=piece,
+                    hold=bool(c.hold),
+                    cells=cells,
+                    score=float(-c.rating),  # blockfish: lower is better
+                )
+            )
+
+        advice = BotAdvice(
+            piece=cands_out[0].piece if cands_out else PieceType(0),
+            hold=cands_out[0].hold if cands_out else False,
+            cells=cands_out[0].cells if cands_out else (),
+            candidates=tuple(cands_out),
+            think_ms=think_ms,
+        )
+        if not cands_out:
+            return None
+        return advice
+
+
 # --- registry ------------------------------------------------------------------
 
 _BACKENDS: dict[str, type[Backend]] = {
@@ -792,6 +966,7 @@ _BACKENDS: dict[str, type[Backend]] = {
     "zetris": lambda: MisaMinoBackend(style="zetris"),
     "cold-clear": ColdClearBackend,
     "fusion": FusionBackend,
+    "blockfish": BlockfishBackend,
 }
 
 
