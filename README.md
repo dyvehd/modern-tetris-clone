@@ -65,6 +65,18 @@ height, `[rules] cheese_messiness = 50` to loosen/tighten the holes, and
 `[rules] cheese_refill_on_clear = true` for TETR.IO's instant refill
 (topped back up after every placement, clears included).
 
+The left panel carries the race stats: the basics (time, PPS, blocks
+used, attack) plus the Jstris+ advanced block — **APP** (attack per
+piece), **PPD** (pieces per downstack-line dug — lower is better),
+**Block pace** (a forecast of the total pieces you'll need to finish,
+from your pace so far: remaining/dug × pieces + pieces) and **Time
+pace** (the same extrapolation on the clock, forecast total time).
+PPD and the two paces appear only in cheese-with-goal modes; every
+formula is the Jstris+ definition (github.com/JstrisPlus/
+jstris-plus-userscript, `src/stats.js`), shown as `-` until the first
+line is dug. The game-over screen repeats the block with your final
+numbers.
+
 ### 100L cheese trainer (AI coaching mode)
 
 The same 100-line cheese race, **zero gravity, infinite SDF**, with a bot

@@ -19,6 +19,7 @@ from ..engine.constants import (
     VISIBLE_TOP,
 )
 from ..engine.game import Game
+from ..stats import advanced_rows
 
 BG = (13, 16, 21)
 PANEL = (24, 29, 37)
@@ -347,6 +348,7 @@ class Renderer:
             ("LEVEL", str(game.level)),
             ("TIME", self._fmt_time(game.seconds)),
             ("PPS", f"{game.pieces_placed / game.seconds:.2f}" if game.seconds > 1 else "-"),
+            ("BLOCKS", str(game.pieces_placed)),
             ("ATTACK", str(game.attack_sent)),
         ]
         for i, (label, value) in enumerate(rows):
@@ -359,6 +361,17 @@ class Renderer:
             y2 += 26
         if game.combo >= 2:
             self.text(f"{game.combo - 1} COMBO", x, y2, 18, COMBO_COLOR, bold=True)
+            y2 += 26
+
+        # advanced race stats (Jstris+ definitions) — compact rows under
+        # the banners, above the footer
+        adv = advanced_rows(game)
+        if adv:
+            self.text("ADVANCED", x, 596, 12, ACCENT, bold=True)
+            for i, (label, value) in enumerate(adv):
+                yy = 618 + i * 22
+                self.text(label, x, yy, 12, TEXT_DIM, bold=True)
+                self.text(value, x + 118, yy, 14, TEXT, align="right")
 
         self.text("ESC pause  R restart", x, 720, 14, TEXT_DIM)
         self.text("Q menu  F12 screenshot", x, 740, 14, TEXT_DIM)
@@ -530,5 +543,12 @@ class Renderer:
         ]
         for i, line in enumerate(lines):
             self.text(line, 480, 280 + i * 34, 20, TEXT, align="center")
+        # advanced race stats (Jstris+ definitions) on the finish screen
+        y3 = 280 + len(lines) * 34 + 18
+        for label, value in advanced_rows(game):
+            if value == "-":
+                continue  # nothing meaningful measured yet
+            self.text(f"{label}  {value}", 480, y3, 16, TEXT_DIM, align="center")
+            y3 += 24
         bottom = "Ctrl+Z undo    R restart    Q menu" if undo_hint else "R restart    Q menu"
-        self.text(bottom, 480, 560, 18, TEXT_DIM, align="center")
+        self.text(bottom, 480, max(560, y3 + 14), 18, TEXT_DIM, align="center")
