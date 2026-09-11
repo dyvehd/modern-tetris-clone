@@ -87,6 +87,12 @@ MODES: dict[str, dict] = {
         "rules": {"gravity_g": 0.02, "goal_lines": 100, "cheese_rows": 9},
         "desc": "Dig through 100 lines of cheese",
     },
+    "100L Cheese Trainer": {
+        "rules": {"gravity_g": 0.0, "goal_lines": 100, "cheese_rows": 9},
+        "ai_trainer": True,
+        "undo": True,
+        "desc": "Dig 100 lines, 0G, with AI: shadows, automove, live feedback",
+    },
     "Cheese ∞": {
         "rules": {"gravity_g": 0.02, "goal_lines": None, "cheese_rows": 9},
         "desc": "Endless digging — the cheese stack never runs out",

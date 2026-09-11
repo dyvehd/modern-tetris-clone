@@ -405,6 +405,17 @@ class Game:
         self.pieces_placed += 1
         if tspin != "none":
             self.tspins += 1
+        # the trainer mode consumes the placement's absolute cells (move
+        # annotation, live feedback); emitted before any line clear
+        self.events.append({
+            "kind": "lock",
+            "piece": piece.type,
+            "cells": tuple(sorted(
+                (piece.y + cy, piece.x + cx)
+                for cx, cy in PIECE_CELLS[piece.type][piece.rot]
+            )),
+            "tspin": tspin,
+        })
 
         # Lock out: the piece came to rest entirely above the visible field.
         cells = PIECE_CELLS[piece.type][piece.rot]

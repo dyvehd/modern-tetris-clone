@@ -163,6 +163,9 @@ class App:
         self.game: Game | None = None
         self.trainer = False
         self._trainer_ticks = 0
+        # the AI cheese trainer (None outside the trainer mode)
+        self.ai_trainer = None
+        self._last_flashed = None  # last MoveQuality that flashed a popup
         # zen undo (TETR.IO-style Ctrl+Z): while you control a piece we keep
         # its spawn snapshot; when it locks, that snapshot joins the undo
         # stack — undoing puts the placed piece back in your hands
@@ -219,7 +222,12 @@ class App:
     def start_game(self) -> None:
         mode = self.modes[self.mode_idx]
         rules, trainer = make_mode_config(mode, self.cfg)
-        rules.soft_drop_factor = self.cfg.input.sdf  # handling lives in [input]
+        # the AI trainer pins infinite SDF: the movegen/pathfinder model is
+        # sonic drop, and finite soft drop would make bot hints unnavigable
+        if MODES[mode].get("ai_trainer"):
+            rules.soft_drop_factor = math.inf
+        else:
+            rules.soft_drop_factor = self.cfg.input.sdf
         seed = random.randrange(1 << 62)  # recorded in the input log: replayable
         self.game = Game(rules, seed=seed)
         self.trainer = trainer
@@ -227,6 +235,17 @@ class App:
         self.undo_enabled = bool(MODES[mode].get("undo", False))
         if not self.undo_enabled:
             self._undo_stack.clear()  # the history belongs to zen-style modes
+        # the AI cheese trainer (100L trainer mode)
+        if MODES[mode].get("ai_trainer"):
+            if self.ai_trainer is None:
+                from .trainer.trainer import Trainer, TrainerConfig
+
+                self.ai_trainer = Trainer(TrainerConfig())
+                self.ai_trainer.set_undo_hook(self._trainer_undo)
+            self.ai_trainer.on_restart()
+        elif self.ai_trainer is not None:
+            self.ai_trainer.close()
+            self.ai_trainer = None
         self.edit_enabled = bool(MODES[mode].get("edit", False))
         self._edit_stroke = None
         self._edit_last_pos = None
@@ -275,10 +294,73 @@ class App:
         """Push DAS/ARR/SDF into the live controller and running game."""
         self.controller.apply_config(self.cfg.input)
         if self.game is not None:
-            self.game.cfg.soft_drop_factor = self.cfg.input.sdf
+            # the AI trainer keeps infinite SDF: the movegen/pathfinder
+            # model is sonic drop, and finite soft drop would desync bot
+            # hints (the settings screen still adjusts DAS/ARR live)
+            if not self.ai_trainer:
+                self.game.cfg.soft_drop_factor = self.cfg.input.sdf
 
     def restart(self) -> None:
         self.start_game()
+
+    def _trainer_undo(self) -> bool:
+        """Undo hook for the AI trainer (live feedback's auto-undo). Same
+        snapshot discipline as _undo, plus the trainer-side cleanup."""
+        if not self._undo_stack:
+            return False
+        restored = self._undo()
+        if restored and self.ai_trainer is not None:
+            self.ai_trainer.on_undo()
+        return restored
+
+    # AI trainer keybinds (trainer mode only; fixed keys by design — they
+    # are overlay switches, not gameplay inputs):
+    #   F1  AI on/off          F2  shadows on/off       F3  live feedback
+    #   F4  automove on/off    F5  step mode           F6  next AI model
+    #   F7/F8  lookahead -/+   F9/F10 automove PPS -/+
+    def _trainer_key(self, key: int) -> bool:
+        """Handle an AI-trainer hotkey. Returns True when consumed."""
+        t = self.ai_trainer
+        if t is None:
+            return False
+        cfg = t.cfg
+        from .trainer.backends import available_backends
+
+        if key == pygame.K_F1:
+            cfg.toggle("ai")
+            note = f"AI {'on' if cfg.ai_on else 'off'}"
+        elif key == pygame.K_F2:
+            cfg.toggle("shadows")
+            note = f"shadows {'on' if cfg.shadows_on else 'off'}"
+        elif key == pygame.K_F3:
+            cfg.toggle("feedback")
+            note = f"live feedback {'on' if cfg.live_feedback else 'off'}"
+        elif key == pygame.K_F4:
+            cfg.toggle("automove")
+            note = f"automove {'on' if cfg.automove else 'off'}"
+        elif key == pygame.K_F5:
+            cfg.toggle("step")
+            note = f"step mode {'on' if cfg.step_mode else 'off'}"
+        elif key == pygame.K_F6:
+            names = available_backends()
+            if not names:
+                return True
+            i = names.index(cfg.backend) if cfg.backend in names else 0
+            t.set_backend(names[(i + 1) % len(names)])
+            note = f"model: {t.cfg.backend}"
+        elif key in (pygame.K_F7, pygame.K_F8):
+            cfg.lookahead = max(0, min(9, cfg.lookahead + (1 if key == pygame.K_F8 else -1)))
+            note = f"lookahead {cfg.lookahead + 1}"
+        elif key in (pygame.K_F9, pygame.K_F10):
+            cfg.automove_pps = max(
+                0.5, min(20.0, cfg.automove_pps + (0.5 if key == pygame.K_F10 else -0.5))
+            )
+            note = f"automove {cfg.automove_pps:g} pps"
+        else:
+            return False
+        self._note(note)
+        self.renderer.add_popup(note.upper())
+        return True
 
     def _undo(self) -> bool:
         """Zen undo: restore the snapshot taken when the piece you just
@@ -363,6 +445,16 @@ class App:
             elif (self.undo_enabled and key == pygame.K_z
                     and event.mod & pygame.KMOD_CTRL):
                 self._undo()
+            elif self.ai_trainer is not None and self._trainer_key(key):
+                pass  # a trainer hotkey was consumed
+            elif (
+                self.ai_trainer is not None
+                and self.ai_trainer.cfg.step_mode
+                and self.ai_trainer.cfg.automove
+                and key in parse_key_names(keys.hard_drop)
+            ):
+                # step mode: the hard-drop key steps one bot move
+                self.ai_trainer.request_step()
             else:
                 self.route_game_key(key)
         elif self.state == self.STATE_PAUSE:
@@ -717,11 +809,31 @@ class App:
                 self._last_undo_active = game.active
                 self._spawn_snapshot = game.clone()
 
-        for ev in game.events:
+        # AI trainer: annotation, live feedback, shadows data, automove.
+        # Runs BEFORE the popup loop so a lock's annotation can flash in
+        # the same tick it happened; automove's own ticks return their
+        # events to this same handling.
+        trainer_events: list[dict] = []
+        if self.ai_trainer is not None and not game.over:
+            trainer_events = self.ai_trainer.tick(game, list(game.events))
+
+        for ev in list(game.events) + trainer_events:
             if ev.get("kind") == "clear":
                 self.renderer.add_popup(ev["label"], ev.get("attack", 0))
             elif ev.get("kind") == "tspin":
                 self.renderer.add_popup(ev["label"], 0)
+            elif (
+                ev.get("kind") == "lock"
+                and self.ai_trainer is not None
+                and self.ai_trainer.last_quality is not None
+                and self.ai_trainer.cfg.shadows_on is False
+            ):
+                # the annotation flashes only when hints are hidden (with
+                # shadows on, the board already shows the answer)
+                q = self.ai_trainer.last_quality
+                if self.ai_trainer.stats.n and q is not self._last_flashed:
+                    self._last_flashed = q
+                    self.renderer.add_popup(q.label.upper(), 0)
 
         if self.trainer:
             self._trainer_ticks += 1
@@ -752,10 +864,16 @@ class App:
                                          undo_hint=self.undo_enabled)
         else:
             edit = self.edit_enabled and self.state == self.STATE_PLAY
+            shadows = []
+            if self.ai_trainer is not None and self.state == self.STATE_PLAY:
+                shadows = self.ai_trainer.shadow_placements(self.game)
             self.renderer.draw(self.game, self.modes[self.mode_idx],
                                paused=(self.state == self.STATE_PAUSE),
                                undo_hint=self.undo_enabled, edit=edit,
-                               hover=self._hover_cell if edit else None)
+                               hover=self._hover_cell if edit else None,
+                               ai_shadows=shadows)
+            if self.ai_trainer is not None and self.state == self.STATE_PLAY:
+                self.renderer.draw_trainer_panel(self.ai_trainer.hud_lines())
             if self.queue_edit is not None:
                 self.renderer.draw_queue_dialog(self.queue_edit)
         pygame.display.flip()

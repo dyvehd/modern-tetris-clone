@@ -19,6 +19,7 @@ from ..engine.constants import (
     VISIBLE_TOP,
 )
 from ..engine.game import Game
+from ..stats import advanced_rows
 
 BG = (13, 16, 21)
 PANEL = (24, 29, 37)
@@ -131,14 +132,74 @@ class Renderer:
     # ----------------------------------------------------------------- frame
 
     def draw(self, game: Game, mode: str, paused: bool = False, undo_hint: bool = False,
-             edit: bool = False, hover=None) -> None:
+             edit: bool = False, hover=None, ai_shadows=None) -> None:
         self.screen.fill(BG)
         self.draw_field(game, hover=hover if edit else None)
+        if ai_shadows:
+            self.draw_ai_shadows(ai_shadows)
         self.draw_side_panels(game, bag_separators=edit)
         self.draw_stats(game, mode)
         self.draw_popups()
         if paused:
             self.draw_pause(undo_hint)
+
+    AI_HINT = (150, 200, 255)  # fallback tint for trainer chrome (panel header)
+
+    def draw_ai_shadows(self, shadows) -> None:
+        """Draw the bot's plan as corner-tick outlines.
+
+        Rank 0 is the placement the bot will actually play (drawn at
+        full strength); deeper ranks are its planned placements for the
+        coming pieces, faded by plan depth. Every shadow uses its own
+        piece's color, so a glance tells you which piece goes where. The
+        ticks stay visually distinct from the player's ghost, which is a
+        solid full-cell border.
+        """
+        c = self.cell
+        fx, fy = self.field_x, self.field_y
+        for placement, rank, hold in shadows:
+            fade = max(0.45, 1.0 - 0.14 * rank)
+            color = _dim(self.piece_color(placement.piece), fade)
+            for ry, cx in placement.cells:
+                px = fx + cx * c
+                py = fy + (ry - VISIBLE_TOP) * c
+                t = max(3, c // 5)  # corner tick length
+                m = 2
+                pts = (
+                    ((px + m, py + m + t), (px + m, py + m), (px + m + t, py + m)),
+                    ((px + c - m - t, py + m), (px + c - m, py + m), (px + c - m, py + m + t)),
+                    ((px + c - m, py + c - m - t), (px + c - m, py + c - m), (px + c - m - t, py + c - m)),
+                    ((px + m + t, py + c - m), (px + m, py + c - m), (px + m, py + c - m - t)),
+                )
+                for tri in pts:
+                    pygame.draw.polygon(self.screen, color, tri)
+            if hold and rank == 0:
+                # the hold flag on the top move: a small dot in each cell
+                for ry, cx in placement.cells:
+                    pygame.draw.circle(
+                        self.screen, color,
+                        (fx + cx * c + c // 2, fy + (ry - VISIBLE_TOP) * c + c // 2),
+                        max(2, c // 8),
+                    )
+
+    def draw_trainer_panel(self, rows: list[tuple[str, str]]) -> None:
+        """The AI trainer status panel (right side, under the next queue).
+
+        Anchored to the bottom of the right column: if the row list grows
+        (live stats add two rows), the panel moves up rather than spilling
+        off the bottom of the window.
+        """
+        x = 700
+        line_h = 18
+        top = self.field_y + 5 * int(round(3.04 * self.cell)) + 90
+        bottom = self.field_y + self.field_px_h + 74
+        y = min(top, bottom - (22 + line_h * len(rows)))
+        self.text("AI TRAINER", x, y, 15, self.AI_HINT, bold=True)
+        y += 22
+        for label, value in rows:
+            self.text(label, x, y, 13, TEXT_DIM, bold=True)
+            self.text(value, x + 110, y, 13, TEXT)
+            y += line_h
 
     def cell_style(self, game: Game, ry: int, x: int):
         """Color of a locked cell from the engine's style grid."""
@@ -287,6 +348,7 @@ class Renderer:
             ("LEVEL", str(game.level)),
             ("TIME", self._fmt_time(game.seconds)),
             ("PPS", f"{game.pieces_placed / game.seconds:.2f}" if game.seconds > 1 else "-"),
+            ("BLOCKS", str(game.pieces_placed)),
             ("ATTACK", str(game.attack_sent)),
         ]
         for i, (label, value) in enumerate(rows):
@@ -299,6 +361,17 @@ class Renderer:
             y2 += 26
         if game.combo >= 2:
             self.text(f"{game.combo - 1} COMBO", x, y2, 18, COMBO_COLOR, bold=True)
+            y2 += 26
+
+        # advanced race stats (Jstris+ definitions) — compact rows under
+        # the banners, above the footer
+        adv = advanced_rows(game)
+        if adv:
+            self.text("ADVANCED", x, 596, 12, ACCENT, bold=True)
+            for i, (label, value) in enumerate(adv):
+                yy = 618 + i * 22
+                self.text(label, x, yy, 12, TEXT_DIM, bold=True)
+                self.text(value, x + 118, yy, 14, TEXT, align="right")
 
         self.text("ESC pause  R restart", x, 720, 14, TEXT_DIM)
         self.text("Q menu  F12 screenshot", x, 740, 14, TEXT_DIM)
@@ -470,5 +543,12 @@ class Renderer:
         ]
         for i, line in enumerate(lines):
             self.text(line, 480, 280 + i * 34, 20, TEXT, align="center")
+        # advanced race stats (Jstris+ definitions) on the finish screen
+        y3 = 280 + len(lines) * 34 + 18
+        for label, value in advanced_rows(game):
+            if value == "-":
+                continue  # nothing meaningful measured yet
+            self.text(f"{label}  {value}", 480, y3, 16, TEXT_DIM, align="center")
+            y3 += 24
         bottom = "Ctrl+Z undo    R restart    Q menu" if undo_hint else "R restart    Q menu"
-        self.text(bottom, 480, 560, 18, TEXT_DIM, align="center")
+        self.text(bottom, 480, max(560, y3 + 14), 18, TEXT_DIM, align="center")
