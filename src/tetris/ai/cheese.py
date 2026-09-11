@@ -192,8 +192,31 @@ def run_episode(agent, env: CheeseEnv, seed: int, *, navigate: bool = True) -> E
 
     game = Game(env.game_config(), seed=seed)
     first_piece = game.queue[0]
+    return _run_loop(game, agent, env, seed, first_piece, navigate)
+
+
+def run_episode_from(game: Game, agent, env: CheeseEnv, *, navigate: bool = False) -> EpisodeResult:
+    """Continue a cheese episode from an existing (possibly mid-episode)
+    engine state — the counterfactual/continuation API. ``game`` may be a
+    ``Game.clone()`` of a running episode; play proceeds under ``env``'s
+    rules from exactly the passed RNG state (piece-cap checks run on the
+    passed-in game's already-placed count). The result's ``pieces`` is
+    the TOTAL placed including whatever ``game`` already contains; a
+    continuation's own cost is ``result.pieces - game.pieces_placed``.
+    Used by the round-2 value-label collection to force sibling moves
+    and play out the rest (same stream, same refill behavior)."""
+
+    first_piece = game.queue[0]
+    return _run_loop(game, agent, env, seed=0, first_piece=first_piece, navigate=navigate)
+
+
+def _run_loop(
+    game: Game, agent, env: CheeseEnv, seed: int, first_piece: PieceType,
+    navigate: bool, inputs: list[list[Action]] | None = None,
+) -> EpisodeResult:
     decisions: list[Decision] = []
-    inputs: list[list[Action]] | None = [] if navigate else None
+    if inputs is None:
+        inputs = [] if navigate else None
 
     while not game.over:
         if game.active is None:  # ARE 0: an empty tick spawns the next piece
