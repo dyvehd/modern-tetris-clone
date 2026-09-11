@@ -9,9 +9,15 @@ alone, and CI / a fresh clone must not fail on the missing artifacts.
 
 from __future__ import annotations
 
+import os
 import time
 
-import pytest
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+
+import pytest  # noqa: E402
+
+pygame = pytest.importorskip("pygame")  # noqa: E402
 
 from tetris.ai import enumerate_placements
 from tetris.ai.pathfinder import find_path
@@ -388,6 +394,113 @@ class TestTrainer:
             assert tr.stats.n == 0
             assert tr.last_quality is None
             assert tr.last_advice is None
+        finally:
+            tr.close()
+
+
+# ---------------------------------------------- config / HUD / renderer
+
+
+class TestTrainerConfig:
+    def test_toggle_flips_each_named_switch(self):
+        from tetris.trainer.trainer import _TOGGLE_ATTR
+
+        cfg = TrainerConfig()
+        for name, attr in _TOGGLE_ATTR.items():
+            before = getattr(cfg, attr)
+            assert cfg.toggle(name) is (not before)
+            assert getattr(cfg, attr) is (not before)
+            # and back
+            assert cfg.toggle(name) is before
+            assert getattr(cfg, attr) is before
+
+    def test_toggle_unknown_name_raises(self):
+        with pytest.raises(KeyError):
+            TrainerConfig().toggle("nope")
+
+
+class TestTrainerHud:
+    def _bare(self, **cfg_over) -> Trainer:
+        """A Trainer with no advisor thread — hud_lines only reads cfg/stats."""
+        tr = Trainer.__new__(Trainer)
+        tr.cfg = TrainerConfig(**cfg_over)
+        tr.stats = AccuracyStats()
+        tr.last_quality = None
+        return tr
+
+    def test_automove_pace_folds_into_mode_row(self):
+        rows = dict(self._bare(automove=True, step_mode=True, automove_pps=3.5).hud_lines())
+        assert "PPS" not in rows  # no seventh row (it would overflow the panel)
+        assert rows["AI"] == "automove·step 3.5pps"
+
+    def test_row_count_stays_within_panel_budget(self):
+        from tetris.trainer.annotation import MoveQuality
+
+        tr = self._bare(automove=True, automove_pps=2.0)
+        q = MoveQuality(placed_cells=(), matched=True, hold=False, rank=0,
+                        n_candidates=3, z_gap=0.0, label="best",
+                        best_cells=(), best_hold=False)
+        tr.last_quality = q
+        tr.stats.record(q)
+        rows = tr.hud_lines()
+        assert len(rows) <= 6, rows
+        assert dict(rows)["LAST MOVE"] == "best (1/3)"
+
+
+class TestTrainerRendering:
+    def test_shadow_outline_uses_piece_color(self):
+        from tetris.ai.movegen import Placement
+        from tetris.engine.constants import PIECE_COLORS, VISIBLE_TOP
+        from tetris.render.renderer import Renderer
+
+        surf = pygame.Surface((960, 780))
+        r = Renderer(surf)
+        cells = tuple((VISIBLE_TOP + 2 + i, 0) for i in range(4))
+        pl = Placement(piece=PieceType.T, rot=0, x=0, y=VISIBLE_TOP + 2,
+                       spin="none", cells=cells)
+        r.draw_ai_shadows([(pl, 0, False)])
+        py = r.field_y + (cells[0][0] - VISIBLE_TOP) * r.cell
+        got = surf.get_at((r.field_x + 4, py + 4))[:3]
+        assert got == PIECE_COLORS[PieceType.T], (got, PIECE_COLORS[PieceType.T])
+
+    def test_panel_rows_fit_on_screen(self):
+        from tetris.render.renderer import Renderer
+
+        surf = pygame.Surface((960, 780))
+        r = Renderer(surf)
+        seen: list[tuple[str, int]] = []
+        r.text = lambda s, x, y, *a, **k: seen.append((s, y))  # noqa: ARG005
+        rows = [
+            ("AI", "automove·step 2pps"), ("MODEL", "cheese-beam"),
+            ("SHADOWS", "4"), ("FEEDBACK", "off"),
+            ("LAST MOVE", "best (1/1)"), ("ACCURACY", "0.00z / 100% top"),
+        ]
+        r.draw_trainer_panel(rows)
+        assert seen[0][0] == "AI TRAINER"
+        assert max(y for _, y in seen) + 18 <= surf.get_height()
+
+
+class TestTrainerKeybinds:
+    def test_function_keys_toggle_without_crashing(self):
+        """Regression: F1-F5 crashed on TrainerConfig having no toggle()."""
+        from tetris.app import App
+        from tetris.config import AppConfig, DebugConfig
+
+        app = App(AppConfig(debug=DebugConfig(log_input=False)))
+        app.mode_idx = app.modes.index("100L Cheese Trainer")
+        app.start_game()
+        tr = app.ai_trainer
+        assert tr is not None
+        try:
+            cfg = tr.cfg
+            before = (cfg.automove, cfg.step_mode, cfg.live_feedback)
+            for k in (pygame.K_F1, pygame.K_F2, pygame.K_F3, pygame.K_F4, pygame.K_F5,
+                      pygame.K_F6, pygame.K_F7, pygame.K_F8, pygame.K_F9, pygame.K_F10):
+                ev = pygame.event.Event(pygame.KEYDOWN, key=k)
+                assert app.handle_key(k, ev) is True, f"F-key {k} not consumed"
+            assert cfg.live_feedback is not before[2]  # F3
+            assert cfg.automove is not before[0]       # F4
+            assert cfg.step_mode is not before[1]      # F5
         finally:
             tr.close()
 

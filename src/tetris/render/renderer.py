@@ -142,18 +142,22 @@ class Renderer:
         if paused:
             self.draw_pause(undo_hint)
 
-    AI_HINT = (150, 200, 255)  # bot hints: cool blue-white, clearly not a piece
+    AI_HINT = (150, 200, 255)  # fallback tint for trainer chrome (panel header)
 
     def draw_ai_shadows(self, shadows) -> None:
-        """Draw the bot's ranked placements as corner-tick outlines —
-        visually distinct from the active piece's solid ghost border.
-        Rank 0 (the bot's top move) is drawn at full strength, deeper
-        ranks fade toward the background."""
+        """Draw the bot's ranked placements as corner-tick outlines.
+
+        The outline is the piece's own color, faded by rank (rank 0, the
+        bot's top move, at full strength) — so a glance tells you which
+        piece the bot wants where. It stays visually distinct from the
+        player's ghost, which is a solid full-cell border rather than
+        four corner ticks.
+        """
         c = self.cell
         fx, fy = self.field_x, self.field_y
         for placement, rank, hold in shadows:
-            fade = max(0.18, 1.0 - 0.16 * rank)
-            color = tuple(int(v * fade) for v in self.AI_HINT)
+            fade = max(0.45, 1.0 - 0.14 * rank)
+            color = _dim(self.piece_color(placement.piece), fade)
             for ry, cx in placement.cells:
                 px = fx + cx * c
                 py = fy + (ry - VISIBLE_TOP) * c
@@ -177,15 +181,23 @@ class Renderer:
                     )
 
     def draw_trainer_panel(self, rows: list[tuple[str, str]]) -> None:
-        """The AI trainer status panel (right side, under the next queue)."""
+        """The AI trainer status panel (right side, under the next queue).
+
+        Anchored to the bottom of the right column: if the row list grows
+        (live stats add two rows), the panel moves up rather than spilling
+        off the bottom of the window.
+        """
         x = 700
-        y = self.field_y + 5 * int(round(3.04 * self.cell)) + 90
-        self.text("AI TRAINER", x, y, 16, self.AI_HINT, bold=True)
-        y += 26
+        line_h = 18
+        top = self.field_y + 5 * int(round(3.04 * self.cell)) + 90
+        bottom = self.field_y + self.field_px_h + 74
+        y = min(top, bottom - (22 + line_h * len(rows)))
+        self.text("AI TRAINER", x, y, 15, self.AI_HINT, bold=True)
+        y += 22
         for label, value in rows:
             self.text(label, x, y, 13, TEXT_DIM, bold=True)
             self.text(value, x + 110, y, 13, TEXT)
-            y += 20
+            y += line_h
 
     def cell_style(self, game: Game, ry: int, x: int):
         """Color of a locked cell from the engine's style grid."""

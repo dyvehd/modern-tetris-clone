@@ -324,7 +324,7 @@ class App:
         if t is None:
             return False
         cfg = t.cfg
-        from .trainer import backends as BB
+        from .trainer.backends import available_backends
 
         if key == pygame.K_F1:
             cfg.toggle("ai")
@@ -342,7 +342,7 @@ class App:
             cfg.toggle("step")
             note = f"step mode {'on' if cfg.step_mode else 'off'}"
         elif key == pygame.K_F6:
-            names = BB.available_backends()
+            names = available_backends()
             if not names:
                 return True
             i = names.index(cfg.backend) if cfg.backend in names else 0

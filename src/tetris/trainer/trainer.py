@@ -36,6 +36,16 @@ from .annotation import AccuracyStats, MoveQuality, annotate
 from .backends import BotAdvice, make_backend
 
 
+# app keybind name -> config attribute (see App._trainer_key)
+_TOGGLE_ATTR = {
+    "ai": "ai_on",
+    "shadows": "shadows_on",
+    "feedback": "live_feedback",
+    "automove": "automove",
+    "step": "step_mode",
+}
+
+
 @dataclass
 class TrainerConfig:
     """User-facing knobs, all changeable live (see the app's keybinds)."""
@@ -48,6 +58,17 @@ class TrainerConfig:
     automove: bool = False
     automove_pps: float = 2.0
     step_mode: bool = False  # one bot move per hard-drop key press
+
+    def toggle(self, name: str) -> bool:
+        """Flip one named switch; returns its new state.
+
+        ``name`` uses the short labels the app's keybinds use. An unknown
+        name raises (a typo should be loud, not a silent no-op).
+        """
+        attr = _TOGGLE_ATTR[name]
+        value = not getattr(self, attr)
+        setattr(self, attr, value)
+        return value
 
 
 class Trainer:
@@ -312,21 +333,28 @@ class Trainer:
     # ------------------------------------------------------------------ HUD
 
     def hud_lines(self) -> list[tuple[str, str]]:
-        """Status rows for the renderer's trainer panel."""
+        """Status rows for the renderer's trainer panel.
+
+        The automove pace is folded into the mode row rather than given a
+        row of its own: the panel is anchored to the bottom of the right
+        column, and a seventh row would push it off the window.
+        """
         name = self.cfg.backend
-        mode = "off" if not self.cfg.ai_on else (
-            "automove" if self.cfg.automove else ("hints" if self.cfg.shadows_on else "watching")
-        )
-        if self.cfg.automove and self.cfg.step_mode:
-            mode = "automove·step"
+        if not self.cfg.ai_on:
+            mode = "off"
+        elif self.cfg.automove:
+            mode = "automove·step" if self.cfg.step_mode else "automove"
+            mode += f" {self.cfg.automove_pps:g}pps"
+        elif self.cfg.shadows_on:
+            mode = "hints"
+        else:
+            mode = "watching"
         rows = [
             ("AI", mode),
             ("MODEL", name),
             ("SHADOWS", f"{1 + max(0, self.cfg.lookahead)}" if self.cfg.shadows_on else "off"),
             ("FEEDBACK", "on" if self.cfg.live_feedback else "off"),
         ]
-        if self.cfg.automove:
-            rows.append(("PPS", f"{self.cfg.automove_pps:g}"))
         if self.stats.n:
             q = self.last_quality
             last = f"{q.label} ({q.rank + 1}/{q.n_candidates})" if q else "-"
