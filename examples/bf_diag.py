@@ -55,7 +55,6 @@ def probe(net, env, seeds, name):
                 return dec
 
         run_episode(Rec(), env, seed, navigate=False)
-    n_cand = len(moves) if moves else 0
     print(
         f"[{name}] decisions {n_dec} | teacher mean rank {np.mean(ranks):.1f} "
         f"(median {np.median(ranks):.0f}, best {min(ranks)}, worst {max(ranks)}) | "
