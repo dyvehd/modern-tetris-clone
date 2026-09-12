@@ -282,6 +282,58 @@ a quality lever: pieces spent + V at the horizon);
 equal budget means V can *widen* effective depth, if discrimination
 improves).
 
+### 2.10 Value-network round 2 (run V2) — taken; the label fix works, the distribution shift doesn't
+
+**Decision**: fix the *label*, not the architecture — swap the teacher
+from corrected-beam to **blockfish** (the dedicated cheese B* bot,
+integrated via the cheese-trainer backend layer, merged 5884c1f), whose
+per-candidate search ratings and forced-sibling continuations provide
+exactly the within-board signal V1's MC labels lacked. The shim's
+`BFCandidate.rating` (lower = better; ~10 units ≈ 1 piece — its
+`piece_penalty`; terminal traces are exact piece counts) labels every
+candidate; `run_episode_from` (4594893) plays exact counterfactual
+continuations from a `Game.clone()` — the played line gets its realized
+return, the top siblings get *measured* play-out costs, unvisited
+candidates get a capped rating-gap prior. Collection: 974k rows in
+10 min (blockfish never loses — zero failure labels, a known gap).
+blockfish itself was measured on the locked manifest as the **second
+acceptance bar**: L1 1.01 / L3 3.50 / L5 7.24 / **L10 17.13, 100% win,
+1.7 s/ep** — 20% better than lin40x5 (21.47) at 1/10 the time.
+
+**Findings**:
+
+- **The label fix delivered what it promised**: held-out q-MAE **1.57**
+  (V1: 6.64), within-board pair concordance **0.60** (chance 0.50),
+  and the teacher's move is V2's argmin 16-30% of decisions by level
+  (V1: ~0). The net demonstrably learned *which placement is better on
+  this board* where labels exist.
+- **Pure V still collapses** (L3 4%, L5 0%, L10 0% win) and blend .5
+  gives L10 **24.81** — *no better than V1's 25.89 against the same
+  bar*, both bars unmet (21.47 lin, 17.13 bf). Reliability comes from
+  the blend; strength did not move.
+- **The argmin diagnostic names the residual failure**: across 215 L10
+  teacher decisions, in 89 of them V2 *confidently* prefers a different
+  move by >0.5 pieces "cheaper" than the teacher's winning move (mean
+  gap −0.48, p10 −1.13). The ranking is right on most pairs
+  (concordance 0.60) but its worst confusions are catastrophic, and a
+  beam compounds argmin errors across ~17 decisions per episode.
+- **Root cause is now distribution shift, not granularity**: the
+  labels came from blockfish's own *winning* lines — positions where
+  its B* values are trustworthy. The V-beam, playing its own (worse)
+  lines, visits positions the label distribution never covered, and
+  the net's extrapolation there is confidently wrong.
+
+**Conclusion**: round 2 exhausted the *label-quality* lever at fixed
+data distribution. Round 3's lever is the one that fixed the policy
+net in run 5: **on-policy relabeling** — play the V-beam, then label
+its *visited* states with blockfish continuations (DAgger for V).
+The infrastructure already exists: `run_episode_from` + the collector
+take the player and the labeler as independent agents, so "collect
+V-beam games, label with blockfish" is a parameter change, not new
+code. A second, cheaper guard: keep blend > 0 as the *reliability*
+component (it is what carries win rate) and treat pure-V as the
+research signal, not the shipping config.
+
 ## 3. Directions considered and rejected (with reasons)
 
 | direction | status | reason |
@@ -298,18 +350,21 @@ improves).
 
 ## 4. Open directions (ranked by evidence and convergence)
 
-1. **Value-network round 2: label granularity** — run V1 built the
-   expert-iteration pipeline and diagnosed the remaining gap: the
-   round-1 net (single-visit MC returns) calibrates across boards but
-   cannot discriminate within one board, so pure-V play collapses
-   between search horizons (L10: 0% win) and the blended V adds
-   strength only at equal beam budget (26.87 vs 28.50 at 10×3; 24.17
-   vs 24.60 at 20×4 — both V wins; runtime halved). Round 2 replaces
-   the labels: **multi-visit expected cost-to-go** (k teacher rollouts
-   per visited state — the beam replays states cheaply) and/or
-   **n-step bootstrapped targets** (pieces spent + V at the horizon,
-   review 2's original formulation). The acceptance bar stays: beam
-   10×3+V ≥ beam 40×5+linear on the locked 800M manifest.
+1. **Value-network round 3: on-policy relabeling (DAgger for V)** —
+   rounds 1-2 localized the remaining gap precisely. V1 (single-visit
+   MC returns) fixed across-board calibration; V2 (blockfish contrast
+   labels: per-candidate B* ratings + measured sibling continuations)
+   fixed within-board discrimination where labels exist (concordance
+   0.60, q-MAE 1.57) — but the labels cover only blockfish's own
+   winning lines, and the V-beam's off-distribution visits are where
+   it collapses (L10 pure-V 0% win; blend .5 stuck at 24.81 vs the
+   21.47/17.13 bars). Round 3 plays the V-beam and labels *its*
+   visited states with blockfish continuations — the same
+   distribution-shift fix that broke the policy net's ceiling in
+   run 5. The collector already separates player from labeler, so this
+   is a parameter change. Acceptance: both bars (lin40x5 21.47 and
+   blockfish 17.13 at L10 on the locked 800M manifest), pure-V
+   reliability ≥ 90% win at every level.
 2. **Compiled movegen/eval + batched V-in-beam** — the compute
    enabler: review 2 measured 10-50× collection throughput available
    (numba or a Cobra adapter) and one-forward-pass-per-ply `V`

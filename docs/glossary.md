@@ -569,7 +569,12 @@ almost nothing about *which placement* is better within one board
 (the teacher's move ranks ~16/26 by q̂; spread ~2 pieces across all
 candidates). Consequence: a pure-V beam random-walks whenever no win
 is inside the search horizon. The `eval_blend` knob mixes the linear
-eval's within-board discrimination back in; .5 measured best.
+eval's within-board discrimination back in; .5 measured best. Round 2's
+contrast labels moved the measured concordance to 0.60 — yet pure-V
+still collapses, because its *worst* confusions are catastrophic
+(the argmin diagnostic: 89/215 L10 decisions the net prefers a
+losing move by >0.5 pieces "cheaper"), which is a distribution-shift
+problem, not a granularity one.
 
 **`eval_blend`** — `ValueBeamAgent`'s mix: 0 = pure V, 1 = pure
 linear eval; intermediate values take V's cross-state calibration
@@ -580,6 +585,47 @@ out at 0% win — the reliability floor the blend exists to fix.
 
 **Bootstrapped (n-step) targets** — pieces spent + `V` at the search
 horizon (once `V` is decent) — a recommended rollout-cost cut.
+
+**Monte-Carlo return** — the realized (not estimated) outcome of an
+episode used as a training label: total pieces placed from a decision
+to the episode's end. "Single-visit" (round 1's labels): every
+candidate of one decision shares the episode's one realized return —
+good across-board calibration, zero within-board signal. "Multi-visit"
+(the reviews' round-2 lever): average returns over k rollouts from the
+same state so sibling candidates accumulate different labels.
+
+**blockfish / `BlockfishAgent`** — the dedicated cheese-race B* bot
+(upstream `blockfish/blockfish`), integrated via the trainer's ctypes
+shim: it thinks on a snapshot of the board, and its advice's lock
+cells are matched to our movegen placements by cell-set identity —
+legality and navigation stay 100% ours, so it can never play a move
+our engine disagrees with. Its per-candidate B* rating (lower = better;
+~10 units ≈ 1 piece — its `piece_penalty`; terminal traces are exact
+piece counts) is the within-board signal round-1 labels lacked.
+Measured on the locked manifest (run V2): L10 17.13 pieces, 100% win,
+1.7 s/ep — the second acceptance bar, 20% better than beam
+40×5+linear at 1/10 the time.
+
+**Contrast labels (round 2)** — run V2's label scheme: at each visited
+root decision, the played line's realized return, *measured* costs of
+forced top-sibling continuations (`run_episode_from` on a
+`Game.clone()` — exact counterfactuals on the same RNG stream), and a
+capped rating-gap prior for unvisited candidates. Result: within-board
+pair concordance 0.60 (chance 0.50), q-MAE 1.57 (round 1: 6.64) — but
+the labels cover only blockfish's winning lines, so the V-beam's
+off-distribution visits remain the round-3 problem (on-policy
+relabeling).
+
+**`run_episode_from(game, agent, env)`** — the harness continuation
+API (round 2): play an episode from an existing, possibly mid-episode
+engine state — counterfactuals and DAgger-for-V collection run on the
+exact same RNG stream and refill behavior as the parent episode.
+
+**On-policy relabeling (DAgger for V)** — round 3's lever: play the
+V-beam, label *its* visited states with blockfish continuations — the
+distribution-shift fix that broke the policy net's ceiling (run 5),
+now applied to the value net. The collector already separates the
+player from the labeler, so it is a parameter change, not new code.
 
 **Soft targets / regret-aware labels** — the reviews' alternative to
 exact teacher-index labels: near-equivalent placements should get

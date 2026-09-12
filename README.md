@@ -499,29 +499,41 @@ unchanged (`--device cuda`), on the RTX Pro 6000 server.
   The remaining gap to the beam is scale (rounds, episodes, net size) —
   the RTX Pro 6000 workload.
 
-## AI value network (expert iteration, round 1)
+## AI value network (expert iteration, rounds 1-2)
 
 `tetris.ai.value` + `tetris.ai.valuebeam` — the reviews' convergence
 point, implemented: a twin-headed value net (softplus cost-to-go +
 sigmoid failure probability) on the v7 **afterstate candidate rows**,
-trained on 5.4M Monte-Carlo return labels from corrected-beam rollouts
-(every candidate of every visited decision), then plugged into the
-beam as its leaf evaluator — `ValueBeamAgent` scores each ply's
-children in one batched GPU forward and keeps the beam's engine-exact
-transitions, refill-exact leaves, and win-guarantee semantics intact.
+trained on return labels from strong-teacher rollouts, then plugged
+into the beam as its leaf evaluator — `ValueBeamAgent` scores each
+ply's children in one batched GPU forward and keeps the beam's
+engine-exact transitions, refill-exact leaves, and win-guarantee
+semantics intact.
 
-Measured (run V1, locked 800M manifest): the net calibrates across
-boards (root means track true level means) but single-visit MC labels
-give it almost no *within-board* discrimination — a pure-V beam
-random-walks between search horizons (L10: 0% win). Blending the
-linear eval back in (`eval_blend=.5`) restores reliability everywhere
-and **beats the pure-linear beam of the same size** (L10: 26.87 vs
-28.50 at 10×3; 24.17 vs 24.60 at 20×4) at half the 40×5 reference's
-runtime — but the strict "10×3+V ≥ 40×5+linear" acceptance bar is
-not met (L10: 25.9 vs 21.5). Round 2's levers, per the run-1
-diagnosis: multi-visit expected-cost-to-go labels and n-step
-bootstrapped targets. Checkpoints + the acceptance manifest:
-`models/value/`; runner: `examples/value_experiment.py`.
+**Round 1** (beam-teacher MC returns, 5.4M rows): the net calibrates
+across boards but single-visit MC labels give almost no *within-board*
+discrimination — a pure-V beam random-walks between search horizons
+(L10: 0% win). Blending the linear eval back in (`eval_blend=.5`)
+restores reliability and **beats the pure-linear beam of the same
+size** (L10: 26.87 vs 28.50 at 10×3) at half the 40×5 reference's
+runtime.
+
+**Round 2** (blockfish labels): the cheese-trainer backend layer
+(external bots under one placement protocol) is merged, and
+`BlockfishAgent` plays our harness with legality/navigation 100% ours.
+blockfish is also the **second acceptance bar**: on the locked manifest
+L10 **17.13 pieces, 100% win, 1.7 s/ep** — 20% better than beam
+40×5+linear (21.47) at 1/10 the time. Its per-candidate B* ratings +
+`run_episode_from` counterfactual continuations produced **contrast
+labels** (974k rows): within-board pair concordance rose to 0.60
+(chance 0.50) and held-out q-MAE fell to 1.57 (round 1: 6.64) — but
+the labels cover only blockfish's winning lines, so the V-beam's
+off-distribution play still collapses (pure-V L10 0% win; blend .5
+24.81). Round 3: on-policy relabeling — play the V-beam, label its
+visited states with blockfish (DAgger for V; the collector already
+separates player from labeler). Checkpoints + acceptance manifests:
+`models/value/`; runners: `examples/value_experiment.py` (round 1),
+`examples/bf_collect.py` + `bf_train.py` + `bf_eval.py` (round 2).
 
 ```bash
 .venv/py.sh examples/value_experiment.py --stage collect --episodes 3000
