@@ -65,6 +65,11 @@ def pull(name: str, out_path: str) -> None:
 if __name__ == "__main__":
     out_dir = sys.argv[1] if len(sys.argv) > 1 else "models/value"
     os.makedirs(out_dir, exist_ok=True)
-    for name in ("round1_manifest.json", "value_round1_eval.json",
-                 "value_round1.json", "value_round1b.json"):
+    for name in (
+        "round1_manifest.json", "value_round1_eval.json",
+        "value_round1.json", "value_round1b.json",
+        # round 2 (blockfish labels)
+        "blockfish_manifest.json", "value_round2.json",
+        "value_round2_eval.json",
+    ):
         pull(name, os.path.join(out_dir, name))

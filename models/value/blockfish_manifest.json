@@ -1,0 +1,46 @@
+{
+  "agent": "blockfish",
+  "search_limit": 50000,
+  "levels": {
+    "1": {
+      "episodes": 100,
+      "wins": 100,
+      "win_rate": 1.0,
+      "pieces_mean_won": 1.01,
+      "capped_mean_fail400": 1.01,
+      "min": 1,
+      "max": 2,
+      "sec_per_ep": 0.08112239122390746
+    },
+    "3": {
+      "episodes": 100,
+      "wins": 100,
+      "win_rate": 1.0,
+      "pieces_mean_won": 3.5,
+      "capped_mean_fail400": 3.5,
+      "min": 3,
+      "max": 6,
+      "sec_per_ep": 0.28425891160964967
+    },
+    "5": {
+      "episodes": 100,
+      "wins": 100,
+      "win_rate": 1.0,
+      "pieces_mean_won": 7.24,
+      "capped_mean_fail400": 7.24,
+      "min": 5,
+      "max": 10,
+      "sec_per_ep": 0.6256518459320068
+    },
+    "10": {
+      "episodes": 100,
+      "wins": 100,
+      "win_rate": 1.0,
+      "pieces_mean_won": 17.13,
+      "capped_mean_fail400": 17.13,
+      "min": 12,
+      "max": 23,
+      "sec_per_ep": 1.7238786625862121
+    }
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "levels": {
+    "1": {
+      "blockfish": {
+        "mean_capped": 1.01,
+        "win_rate": 1.0,
+        "mean_wins": 1.01,
+        "sec_per_ep": 0.08757764101028442
+      },
+      "lin40x5": {
+        "mean_capped": 1.01,
+        "win_rate": 1.0,
+        "mean_wins": 1.01
+      },
+      "v10x3": {
+        "mean_capped": 1.01,
+        "win_rate": 1.0,
+        "mean_wins": 1.01,
+        "paired_vs_lin40x5": [
+          0,
+          0,
+          100
+        ],
+        "paired_vs_blockfish": [
+          0,
+          0,
+          100
+        ]
+      },
+      "v10x3_b50": {
+        "mean_capped": 1.01,
+        "win_rate": 1.0,
+        "mean_wins": 1.01,
+        "paired_vs_lin40x5": [
+          0,
+          0,
+          100
+        ],
+        "paired_vs_blockfish": [
+          0,
+          0,
+          100
+        ]
+      }
+    },
+    "3": {
+      "blockfish": {
+        "mean_capped": 3.5,
+        "win_rate": 1.0,
+        "mean_wins": 3.5,
+        "sec_per_ep": 0.28661571264266966
+      },
+      "lin40x5": {
+        "mean_capped": 3.5,
+        "win_rate": 1.0,
+        "mean_wins": 3.5
+      },
+      "v10x3": {
+        "mean_capped": 384.27,
+        "win_rate": 0.04,
+        "mean_wins": 6.75,
+        "paired_vs_lin40x5": [
+          0,
+          100,
+          0
+        ],
+        "paired_vs_blockfish": [
+          0,
+          100,
+          0
+        ]
+      },
+      "v10x3_b50": {
+        "mean_capped": 3.61,
+        "win_rate": 1.0,
+        "mean_wins": 3.61,
+        "paired_vs_lin40x5": [
+          0,
+          4,
+          96
+        ],
+        "paired_vs_blockfish": [
+          1,
+          4,
+          95
+        ]
+      }
+    },
+    "5": {
+      "blockfish": {
+        "mean_capped": 7.24,
+        "win_rate": 1.0,
+        "mean_wins": 7.24,
+        "sec_per_ep": 0.6356023025512695
+      },
+      "lin40x5": {
+        "mean_capped": 7.78,
+        "win_rate": 1.0,
+        "mean_wins": 7.78
+      },
+      "v10x3": {
+        "mean_capped": 400.0,
+        "win_rate": 0.0,
+        "mean_wins": null,
+        "paired_vs_lin40x5": [
+          0,
+          100,
+          0
+        ],
+        "paired_vs_blockfish": [
+          0,
+          100,
+          0
+        ]
+      },
+      "v10x3_b50": {
+        "mean_capped": 9.68,
+        "win_rate": 1.0,
+        "mean_wins": 9.68,
+        "paired_vs_lin40x5": [
+          8,
+          46,
+          46
+        ],
+        "paired_vs_blockfish": [
+          2,
+          58,
+          40
+        ]
+      }
+    },
+    "10": {
+      "blockfish": {
+        "mean_capped": 17.13,
+        "win_rate": 1.0,
+        "mean_wins": 17.13,
+        "sec_per_ep": 1.7527407860755921
+      },
+      "lin40x5": {
+        "mean_capped": 21.47,
+        "win_rate": 1.0,
+        "mean_wins": 21.47
+      },
+      "v10x3": {
+        "mean_capped": 400.0,
+        "win_rate": 0.0,
+        "mean_wins": null,
+        "paired_vs_lin40x5": [
+          0,
+          100,
+          0
+        ],
+        "paired_vs_blockfish": [
+          0,
+          100,
+          0
+        ]
+      },
+      "v10x3_b50": {
+        "mean_capped": 24.81,
+        "win_rate": 1.0,
+        "mean_wins": 24.81,
+        "paired_vs_lin40x5": [
+          25,
+          65,
+          10
+        ],
+        "paired_vs_blockfish": [
+          6,
+          90,
+          4
+        ]
+      }
+    }
+  },
+  "ladder": {
+    "5x2": {
+      "v_capped": 400.0,
+      "v_win": 0.0,
+      "lin_capped": 32.7,
+      "lin_win": 1.0
+    },
+    "10x3": {
+      "v_capped": 400.0,
+      "v_win": 0.0,
+      "lin_capped": 28.5,
+      "lin_win": 1.0
+    },
+    "20x4": {
+      "v_capped": 400.0,
+      "v_win": 0.0,
+      "lin_capped": 24.6,
+      "lin_win": 1.0
+    },
+    "40x5": {
+      "v_capped": 400.0,
+      "v_win": 0.0,
+      "lin_capped": 22.6,
+      "lin_win": 1.0
+    }
+  },
+  "runtime": {
+    "5x2": {
+      "v_sec_per_ep": 0.5723270893096923,
+      "lin_sec_per_ep": 1.2577842632929483
+    },
+    "10x3": {
+      "v_sec_per_ep": 1.9493438243865966,
+      "lin_sec_per_ep": 3.6581605593363444
+    },
+    "20x4": {
+      "v_sec_per_ep": 5.358246501286825,
+      "lin_sec_per_ep": 8.710465455055237
+    },
+    "40x5": {
+      "v_sec_per_ep": 13.436141435305277,
+      "lin_sec_per_ep": 19.755069041252135
+    },
+    "v10x3_manifest": 1.9456875801086426,
+    "lin40x5_manifest": 19.793191170692445
+  }
+}
